@@ -1,3 +1,4 @@
+import os
 import fractions
 import logging
 import math
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_BITRATE = 1000000  # 1 Mbps
 MIN_BITRATE = 500000  # 500 kbps
 MAX_BITRATE = 3000000  # 3 Mbps
+
+DEFAULT_BITRATE = 10_000_000  # 10 Mbps
+MIN_BITRATE = 1_000_000  # 1000 kbps
+MAX_BITRATE = 30_000_000  # 30 Mbps
 
 MAX_FRAME_RATE = 30
 PACKET_MAX = 1300
@@ -268,11 +273,12 @@ class H264Encoder(Encoder):
 
         if self.codec is None:
             try:
+                os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
                 # Ramona Optics defaults. use QSV if available
                 self.codec = av.CodecContext.create("h264_qsv", "w")
                 self.codec.pix_fmt = "nv12"
                 self.codec.options = {
-                    "level": "6.1",
+                    "level": "61",
                     "tune": "zerolatency",
                     "bf": "0",
                     "b_strategy": "0",
@@ -288,6 +294,10 @@ class H264Encoder(Encoder):
                     "look_ahead": "0",
                     "extbrc": "0",
                     "low_delay_brc": "1",
+                    'b': str(self.target_bitrate),
+                    'maxrate': str(int(self.target_bitrate / 3)),
+                    'minrate': str(int(self.target_bitrate * 3)),
+                    'rc': 'cbr',
 
                     "profile": "main",
                 }
@@ -301,10 +311,10 @@ class H264Encoder(Encoder):
                     "tune": "zerolatency",
                 }
                 self.codec.profile = "Baseline"
+                self.codec.bit_rate = self.target_bitrate
 
             self.codec.width = frame.width
             self.codec.height = frame.height
-            self.codec.bit_rate = self.target_bitrate
             self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
             self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
 
