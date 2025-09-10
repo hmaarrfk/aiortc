@@ -267,18 +267,46 @@ class H264Encoder(Encoder):
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
-            self.codec = av.CodecContext.create("libx264", "w")
+            try:
+                # Ramona Optics defaults. use QSV if available
+                self.codec = av.CodecContext.create("h264_qsv", "w")
+                self.codec.pix_fmt = "nv12"
+                self.codec.options = {
+                    "level": "6.1",
+                    "tune": "zerolatency",
+                    "bf": "0",
+                    "b_strategy": "0",
+
+                    "forced_idr": "1",
+                    "idr_interval": "1",
+
+                    "p_strategy": "0",
+
+                    "adaptive_i": "0",
+                    "adaptive_b": "0",
+
+                    "look_ahead": "0",
+                    "extbrc": "0",
+                    "low_delay_brc": "1",
+
+                    "profile": "main",
+                }
+                self.codec.profile = "main"
+            except av.codec.codec.UnknownCodecError as e:
+                # aiortc defaults -- fallback to software encoding
+                self.codec = av.CodecContext.create("libx264", "w")
+                self.codec.pix_fmt = "yuv420p"
+                self.codec.options = {
+                    "level": "31",
+                    "tune": "zerolatency",
+                }
+                self.codec.profile = "Baseline"
+
             self.codec.width = frame.width
             self.codec.height = frame.height
             self.codec.bit_rate = self.target_bitrate
-            self.codec.pix_fmt = "yuv420p"
             self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
             self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
-            self.codec.options = {
-                "level": "31",
-                "tune": "zerolatency",
-            }
-            self.codec.profile = "Baseline"
 
         data_to_send = b""
         for package in self.codec.encode(frame):
