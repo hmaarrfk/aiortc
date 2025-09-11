@@ -272,7 +272,8 @@ class H264Encoder(Encoder):
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
-            try:
+            # try:
+            if False:
                 os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
                 # Ramona Optics defaults. use QSV if available
                 self.codec = av.CodecContext.create("h264_qsv", "w")
@@ -302,7 +303,8 @@ class H264Encoder(Encoder):
                     "profile": "main",
                 }
                 self.codec.profile = "main"
-            except av.codec.codec.UnknownCodecError as e:
+            # except av.codec.codec.UnknownCodecError as e:
+            elif False:
                 # aiortc defaults -- fallback to software encoding
                 self.codec = av.CodecContext.create("libx264", "w")
                 self.codec.pix_fmt = "yuv420p"
@@ -311,6 +313,20 @@ class H264Encoder(Encoder):
                     "tune": "zerolatency",
                 }
                 self.codec.profile = "Baseline"
+            else:
+                self.codec = av.CodecContext.create("h264_nvenc", "w")
+                self.codec.pix_fmt = "yuv420p"
+                self.codec.options = {
+                    "level": "6.2",
+                    "tune": "ll",             # closest to zerolatency for NVENC
+                    "rc": "vbr",              # or "vbr", depending on your needs
+                    "preset": "p1",           # p1 = lowest latency, p7 = highest quality
+                    'b': str(self.target_bitrate),
+                    'maxrate': str(int(self.target_bitrate / 3)),
+                    'minrate': str(int(self.target_bitrate * 3)),
+                    'profile': 'main',
+                }
+                self.codec.profile = "main"
                 self.codec.bit_rate = self.target_bitrate
 
             self.codec.width = frame.width
