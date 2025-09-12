@@ -272,8 +272,9 @@ class H264Encoder(Encoder):
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
+            print(f"H264Encoder -- {self.target_bitrate=}")
             # try:
-            if False:
+            if True:
                 os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
                 # Ramona Optics defaults. use QSV if available
                 self.codec = av.CodecContext.create("h264_qsv", "w")
@@ -289,8 +290,9 @@ class H264Encoder(Encoder):
 
                     "p_strategy": "0",
 
-                    "adaptive_i": "0",
+                    # "adaptive_i": "0",
                     "adaptive_b": "0",
+                    "async_depth": "1",
 
                     "look_ahead": "0",
                     "extbrc": "0",
@@ -300,10 +302,9 @@ class H264Encoder(Encoder):
                     'minrate': str(int(self.target_bitrate * 3)),
                     'rc': 'cbr',
 
-                    "profile": "main",
+                    "profile": "high",
                 }
-                self.codec.profile = "main"
-            # except av.codec.codec.UnknownCodecError as e:
+                self.codec.profile = "high"
             elif False:
                 # aiortc defaults -- fallback to software encoding
                 self.codec = av.CodecContext.create("libx264", "w")
@@ -364,7 +365,8 @@ class H264Encoder(Encoder):
 
     @target_bitrate.setter
     def target_bitrate(self, bitrate: int) -> None:
-        bitrate = max(MIN_BITRATE, min(bitrate, MAX_BITRATE))
+        # bitrate = max(MIN_BITRATE, min(bitrate, MAX_BITRATE))
+        bitrate = int(DEFAULT_BITRATE)
         self.__target_bitrate = bitrate
 
 
