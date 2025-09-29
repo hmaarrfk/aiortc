@@ -272,13 +272,17 @@ class H264Encoder(Encoder):
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
-            print(f"H264Encoder -- {self.target_bitrate=}")
-            # try:
-            if True:
+            if False:
+                print(f"h264_qsv -- {self.target_bitrate=}")
                 os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
                 # Ramona Optics defaults. use QSV if available
                 self.codec = av.CodecContext.create("h264_qsv", "w")
+                self.codec.width = frame.width
+                self.codec.height = frame.height
+                self.codec.bit_rate = self.target_bitrate
                 self.codec.pix_fmt = "nv12"
+                self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
+                self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
                 self.codec.options = {
                     "level": "61",
                     "tune": "zerolatency",
@@ -305,18 +309,30 @@ class H264Encoder(Encoder):
                     "profile": "high",
                 }
                 self.codec.profile = "high"
-            elif False:
+            elif True:
+                print(f"libx264 -- {self.target_bitrate=}")
                 # aiortc defaults -- fallback to software encoding
                 self.codec = av.CodecContext.create("libx264", "w")
+                self.codec.width = frame.width
+                self.codec.height = frame.height
+                self.codec.bit_rate = self.target_bitrate
                 self.codec.pix_fmt = "yuv420p"
+                self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
+                self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
                 self.codec.options = {
                     "level": "31",
                     "tune": "zerolatency",
                 }
                 self.codec.profile = "Baseline"
             else:
+                print(f"h264_nvenc -- {self.target_bitrate=}")
                 self.codec = av.CodecContext.create("h264_nvenc", "w")
+                self.codec.width = frame.width
+                self.codec.height = frame.height
+                self.codec.bit_rate = self.target_bitrate
                 self.codec.pix_fmt = "yuv420p"
+                self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
+                self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
                 self.codec.options = {
                     "level": "6.2",
                     "tune": "ll",             # closest to zerolatency for NVENC
@@ -328,12 +344,6 @@ class H264Encoder(Encoder):
                     'profile': 'main',
                 }
                 self.codec.profile = "main"
-                self.codec.bit_rate = self.target_bitrate
-
-            self.codec.width = frame.width
-            self.codec.height = frame.height
-            self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
-            self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
 
         data_to_send = b""
         for package in self.codec.encode(frame):
