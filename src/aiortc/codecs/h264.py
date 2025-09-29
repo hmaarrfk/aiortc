@@ -22,7 +22,7 @@ DEFAULT_BITRATE = 1000000  # 1 Mbps
 MIN_BITRATE = 500000  # 500 kbps
 MAX_BITRATE = 3000000  # 3 Mbps
 
-DEFAULT_BITRATE = 10_000_000  # 10 Mbps
+DEFAULT_BITRATE = 3_000_000  # 10 Mbps
 MIN_BITRATE = 1_000_000  # 1000 kbps
 MAX_BITRATE = 30_000_000  # 30 Mbps
 
@@ -256,9 +256,9 @@ class H264Encoder(Encoder):
         if self.codec and (
             frame.width != self.codec.width
             or frame.height != self.codec.height
-            # we only adjust bitrate if it changes by over 10%
+            # we only adjust bitrate if it changes by over 5%
             or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate
-            > 0.1
+            > 0.05
         ):
             self.buffer_data = b""
             self.buffer_pts = None
@@ -334,16 +334,30 @@ class H264Encoder(Encoder):
                 self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
                 self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
                 self.codec.options = {
-                    "level": "6.2",
+                    "level": "4.2",
                     "tune": "ull",             # closest to zerolatency for NVENC
-                    "rc": "cbr",              # or "vbr", depending on your needs
+                    # cbr doesn't seem to work???
+                    # "rc": "vbr",              # or "vbr", depending on your needs
+                    "rc": "cbr_ld_hq",
                     "preset": "p1",           # p1 = lowest latency, p7 = highest quality
                     'b': str(self.target_bitrate),
                     'maxrate': str(int(self.target_bitrate / 3)),
                     'minrate': str(int(self.target_bitrate * 3)),
-                    'profile': 'main',
+                    'profile': 'high',
+
+                    'bf': '0',
+                    'b_adapt': '0',
+                    'rc-lookahead': '0',
+                    'lookahead_level': '0',
+                    'b_ref_mode': '0',
+                    '2pass': '0',
+                    'no-scenecut': '1',
+                    'strict_gop': '1',
+                    'forced-idr': '1',
+                    'zerolatency': '1',
                 }
-                self.codec.profile = "main"
+
+                self.codec.profile = "high"
 
         data_to_send = b"".join(
             bytes(package)
@@ -377,7 +391,8 @@ class H264Encoder(Encoder):
     @target_bitrate.setter
     def target_bitrate(self, bitrate: int) -> None:
         # bitrate = max(MIN_BITRATE, min(bitrate, MAX_BITRATE))
-        bitrate = int(DEFAULT_BITRATE)
+        print(f"Requesting bitrate {bitrate:,}")
+        # bitrate = int(DEFAULT_BITRATE)
         self.__target_bitrate = bitrate
 
 
