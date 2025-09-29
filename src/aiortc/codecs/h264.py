@@ -309,7 +309,7 @@ class H264Encoder(Encoder):
                     "profile": "high",
                 }
                 self.codec.profile = "high"
-            elif True:
+            elif False:
                 print(f"libx264 -- {self.target_bitrate=}")
                 # aiortc defaults -- fallback to software encoding
                 self.codec = av.CodecContext.create("libx264", "w")
@@ -335,8 +335,8 @@ class H264Encoder(Encoder):
                 self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
                 self.codec.options = {
                     "level": "6.2",
-                    "tune": "ll",             # closest to zerolatency for NVENC
-                    "rc": "vbr",              # or "vbr", depending on your needs
+                    "tune": "ull",             # closest to zerolatency for NVENC
+                    "rc": "cbr",              # or "vbr", depending on your needs
                     "preset": "p1",           # p1 = lowest latency, p7 = highest quality
                     'b': str(self.target_bitrate),
                     'maxrate': str(int(self.target_bitrate / 3)),
@@ -345,9 +345,10 @@ class H264Encoder(Encoder):
                 }
                 self.codec.profile = "main"
 
-        data_to_send = b""
-        for package in self.codec.encode(frame):
-            data_to_send += bytes(package)
+        data_to_send = b"".join(
+            bytes(package)
+            for package in self.codec.encode(frame)
+        )
 
         if data_to_send:
             yield from self._split_bitstream(data_to_send)
