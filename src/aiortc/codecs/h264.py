@@ -125,11 +125,60 @@ class H264Decoder(Decoder):
             )
             return []
 
+# Since starting up ffmpeg can be time consuming, we use lru_cache
+# to remember the results of the tests.
+# If shape is provided as a tuple, it is something
+# that can be hashed by lru_cache in order to  ensure
+# the function returns quickly the second time it is requested.
+from functools import lru_cache
+import subprocess
+@lru_cache
+def ffmpeg_test_encoder(encoder):
+    # Note that images smaller than 256 x 256 may not be compatible
+    # with all encoders
+    shape = (256, 256)
+    # Use the null streams to validate if we can encode anything
+    # https://trac.ffmpeg.org/wiki/Null
+    # This effecitevely runs
+    # ffmpeg -hide_banner -f lavfi -i nullsrc=s=256x256:d=8 -f null -vcodec h264_nvenc -
+    cmd = [
+        "ffmpeg", "-hide_banner",
+        "-f", "lavfi",
+        # python works in height x width
+        # but ffmpeg expects width x height
+        # this makes a different for small videos with h264_nvenc
+        "-i", f"nullsrc=s={shape[1]}x{shape[0]}:d=8",
+        "-vcodec", encoder,
+        "-f", "null",
+        "-",
+    ]
+    p = subprocess.run(
+        cmd,
+        stdin=subprocess.PIPE,
+        capture_output=True,
+        check=False,
+    )
+    return p.returncode == 0
+
 
 class H264Encoder(Encoder):
     def __init__(self) -> None:
         self.buffer_data = b""
         self.buffer_pts: Optional[int] = None
+
+        self.__encoder = None
+        for encoder in ["h264_nvenc", "h264_qsv", "libx264", "libopenh264"]:
+            print(f"Testing encoder {encoder}")
+            try:
+                if ffmpeg_test_encoder(encoder):
+                    self.__encoder = encoder
+                    print(f"Using encoder {encoder}")
+                    break
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                raise e
+
         self.codec: Optional[VideoCodecContext] = None
         self.__target_bitrate = DEFAULT_BITRATE
 
@@ -255,6 +304,7 @@ class H264Encoder(Encoder):
     ) -> Iterator[bytes]:
         if self.codec and (
             frame.width != self.codec.width
+            or self.encoder != self.codec.name
             or frame.height != self.codec.height
             # we only adjust bitrate if it changes by over 5%
             or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate
@@ -272,7 +322,7 @@ class H264Encoder(Encoder):
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
-            if False:
+            if self.encoder == "h264_qsv":
                 print(f"h264_qsv -- {self.target_bitrate=}")
                 os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
                 # Ramona Optics defaults. use QSV if available
@@ -309,7 +359,7 @@ class H264Encoder(Encoder):
                     "profile": "high",
                 }
                 self.codec.profile = "high"
-            elif False:
+            elif self.encoder == "libx264":
                 print(f"libx264 -- {self.target_bitrate=}")
                 # aiortc defaults -- fallback to software encoding
                 self.codec = av.CodecContext.create("libx264", "w")
@@ -324,7 +374,7 @@ class H264Encoder(Encoder):
                     "tune": "zerolatency",
                 }
                 self.codec.profile = "Baseline"
-            else:
+            elif self.encoder == "h264_nvenc":
                 print(f"h264_nvenc -- {self.target_bitrate=}")
                 self.codec = av.CodecContext.create("h264_nvenc", "w")
                 self.codec.width = frame.width
@@ -358,6 +408,8 @@ class H264Encoder(Encoder):
                 }
 
                 self.codec.profile = "high"
+            else:
+                print(f"Unknown encoder, defaulting to libopenh264 -- {self.encoder}")
 
         data_to_send = b"".join(
             bytes(package)
@@ -394,6 +446,16 @@ class H264Encoder(Encoder):
         print(f"Requesting bitrate {bitrate:,}")
         # bitrate = int(DEFAULT_BITRATE)
         self.__target_bitrate = bitrate
+
+    @property
+    def encoder(self) -> Optional[str]:
+        return self.__encoder
+
+    @encoder.setter
+    def encoder(self, value: str) -> None:
+        if not ffmpeg_test_encoder(value):
+            raise ValueError(f"Encoder {value} is not available")
+        self.__encoder = value
 
 
 def h264_depayload(payload: bytes) -> bytes:
