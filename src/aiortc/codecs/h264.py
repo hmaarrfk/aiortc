@@ -133,7 +133,12 @@ class H264Encoder(Encoder):
         self.buffer_pts: Optional[int] = None
 
         self.__encoder = None
-        for encoder in ["h264_nvenc", "h264_qsv", "libx264", "libopenh264"]:
+        self.__target_bitrate = None
+        for (encoder, target_bitrate) in [
+            ("h264_nvenc", 3_000_000),  # 3 Mbps
+            ("h264_qsv",  10_000_000),  # 10 Mbps
+            ("libx264", 1_000_000),  # 1 Mbps
+        ]:
             print(f"Testing encoder {encoder}")
             try:
                 if ffmpeg_test_encoder(encoder):
@@ -146,7 +151,8 @@ class H264Encoder(Encoder):
                 raise e
 
         self.codec: Optional[VideoCodecContext] = None
-        self.__target_bitrate = DEFAULT_BITRATE
+        if self.__target_bitrate is None:
+            self.__target_bitrate = DEFAULT_BITRATE
 
     @staticmethod
     def _packetize_fu_a(data: bytes) -> list[bytes]:
