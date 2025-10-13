@@ -138,7 +138,7 @@ class H264Encoder(Encoder):
         self.codec: Optional[VideoCodecContext] = None
 
         for encoder in [
-            "h264_nvenc", "h264_qsv", "libx264",
+            "h264_nvenc", "h264_qsv", "libx264", "libopenh264",
         ]:
             try:
                 if ffmpeg_test_encoder(encoder):
@@ -149,7 +149,9 @@ class H264Encoder(Encoder):
                 raise e
 
         self.__encoder = encoder
+        self._reset_encoder_settings()
 
+    def _reset_encoder_settings(self) -> None:
         if self.__encoder == "h264_qsv":
             self.__pix_fmt = "nv12"
             self.__codec_profile = "high"
@@ -207,6 +209,14 @@ class H264Encoder(Encoder):
                 'zerolatency': '1',
             }
         elif self.__encoder == "libx264":
+            self.__pix_fmt = "yuv420p"
+            self.__codec_profile = "Baseline"
+            self.__codec_options = {
+                "level": "31",
+                "tune": "zerolatency",
+            }
+            self.__target_bitrate = 1_000_000
+        elif self.__encoder == "libopenh264":
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "Baseline"
             self.__codec_options = {
@@ -418,11 +428,17 @@ class H264Encoder(Encoder):
 
     @encoder.setter
     def encoder(self, value: str) -> None:
+        from ._ffmpeg_test_encoder import ffmpeg_test_encoder
         if not ffmpeg_test_encoder(value):
             raise ValueError(f"Encoder {value} is not available")
-        if value != self.__encoder:
-            self.__needs_reconfigure = True
+
+        old_encoder = self.__encoder
         self.__encoder = value
+
+        if value != old_encoder:
+            self.__needs_reconfigure = True
+            # Hmm... is this the right way?
+            self._reset_encoder_settings()
 
     @property
     def pix_fmt(self) -> str:
