@@ -138,7 +138,11 @@ class H264Encoder(Encoder):
         self.codec: Optional[VideoCodecContext] = None
 
         for encoder in [
-            "h264_nvenc", "h264_qsv", "libx264", "libopenh264",
+            # nvenc is really choppy for h264??? but maybe i fixed that??
+            "h264_qsv",
+            "h264_nvenc",
+            "libx264",
+            "libopenh264",
         ]:
             try:
                 if ffmpeg_test_encoder(encoder):
@@ -165,11 +169,11 @@ class H264Encoder(Encoder):
                 "b_strategy": "0",
 
                 "forced_idr": "1",
-                "idr_interval": "1",
+                "idr_interval": "0",
 
                 "p_strategy": "0",
 
-                # "adaptive_i": "0",
+                "adaptive_i": "0",
                 "adaptive_b": "0",
                 "async_depth": "1",
 
@@ -182,6 +186,7 @@ class H264Encoder(Encoder):
                 'rc': 'cbr',
 
                 "profile": "high",
+                "g": "100",
             }
         elif self.__encoder == "h264_nvenc":
             av.logging.set_level(av.logging.VERBOSE)
@@ -201,8 +206,8 @@ class H264Encoder(Encoder):
 
                 "preset": "p1",           # p1 = lowest latency, p7 = highest quality
                 'b': str(bitrate),
-                'maxrate': str(bitrate),
-                'minrate': str(bitrate),
+                'maxrate': str(int(bitrate * 3)),
+                'minrate': str(int(bitrate / 3)),
                 'profile': 'high',
 
                 'bf': '0',
@@ -211,12 +216,13 @@ class H264Encoder(Encoder):
                 'lookahead_level': '0',
                 'b_ref_mode': '0',
                 '2pass': '0',
+
                 'no-scenecut': '1',
                 'strict_gop': '1',
                 'forced-idr': '1',
-                'g': '60',
                 'zerolatency': '1',
 
+                'g': '100',
                 "delay": "0",
                 "vbv_bufsize": str(self.target_bitrate // 2),  # critical for NVENC latency
                 "async_depth": "1",        # one-frame pipeline depth

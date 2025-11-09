@@ -23,7 +23,7 @@ MIN_BITRATE = 1_000_000  # 1 Mbps
 MAX_BITRATE = 30_000_000  # 30 Mbps
 
 MAX_FRAME_RATE = 30
-PACKET_MAX = 1300
+PACKET_MAX = 1100
 
 # HEVC NAL unit types for RTP payload format (RFC 7798)
 NAL_TYPE_FU = 49  # Fragmentation Unit
@@ -156,7 +156,10 @@ class HEVCEncoder(Encoder):
 
         selected_encoder = None
         for encoder in [
-            "hevc_nvenc", "hevc_qsv", "libx265",
+            "hevc_qsv",
+            # prefer QSV???
+            "hevc_nvenc",
+            "libx265",
         ]:
             try:
                 if ffmpeg_test_encoder(encoder):
@@ -187,14 +190,20 @@ class HEVCEncoder(Encoder):
                 'rc': 'cbr',
                 "b_strategy": "0",
                 "forced_idr": "1",
-                "idr_interval": "1",
+                # idr_interval is 0 for all frames should be IDR (and not CRA)
+                # Streaming decoders have a hard time decoding CRA frames.
+                "idr_interval": "0",
                 "p_strategy": "0",
+                "adaptive_i": "0",
                 "adaptive_b": "0",
                 "extbrc": "0",
-                "async_depth": "1",
                 "look_ahead": "0",
                 "low_delay_brc": "1",
                 "strict_gop": "1",
+                "low_power": "0",
+                "gpb": "0",
+                "g": "100",
+                # "closed_gop": "1",
                 'b': str(self.target_bitrate),
                 'maxrate': str(self.target_bitrate),
                 'minrate': str(self.target_bitrate),
@@ -228,7 +237,7 @@ class HEVCEncoder(Encoder):
                 'forced-idr': '1',
                 'zerolatency': '1',
 
-                "g": "60",                 # shorter GOP keeps IDR cadence tight
+                "g": "100",                 # shorter GOP keeps IDR cadence tight
                 "delay": "0",
                 "vbv_bufsize": str(self.target_bitrate // 2),  # critical for NVENC latency
                 "async_depth": "1",        # one-frame pipeline depth
@@ -423,7 +432,7 @@ class HEVCEncoder(Encoder):
                 self.codec.options = self.codec_options
                 self.codec.profile = self.codec_profile
             except Exception as e:
-                print(e)
+                print(f"[HEVC DEBUG] ERROR setting up encoder: {e}")
                 raise e
 
         try:
