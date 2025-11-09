@@ -155,7 +155,9 @@ class H264Encoder(Encoder):
         if self.__encoder == "h264_qsv":
             self.__pix_fmt = "nv12"
             self.__codec_profile = "high"
-            self.__target_bitrate = 10_000_000
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 10_000_000
+            bitrate = self.__target_bitrate
             self.__codec_options = {
                 "level": "61",
                 "tune": "zerolatency",
@@ -174,9 +176,9 @@ class H264Encoder(Encoder):
                 "look_ahead": "0",
                 "extbrc": "0",
                 "low_delay_brc": "1",
-                'b': str(self.target_bitrate),
-                'maxrate': str(int(self.target_bitrate * 3)),
-                'minrate': str(int(self.target_bitrate / 3)),
+                'b': str(bitrate),
+                'maxrate': str(int(bitrate * 3)),
+                'minrate': str(int(bitrate / 3)),
                 'rc': 'cbr',
 
                 "profile": "high",
@@ -185,8 +187,9 @@ class H264Encoder(Encoder):
             av.logging.set_level(av.logging.VERBOSE)
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "high"
-            self.__target_bitrate = 5_000_000
-            bitrate = 5_000_000
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 5_000_000
+            bitrate = self.__target_bitrate
             self.__codec_options = {
                 "level": "6.2",
                 "tune": "ull",             # closest to zerolatency for NVENC
@@ -213,6 +216,10 @@ class H264Encoder(Encoder):
                 'forced-idr': '1',
                 'g': '60',
                 'zerolatency': '1',
+
+                "delay": "0",
+                "vbv_bufsize": str(self.target_bitrate // 2),  # critical for NVENC latency
+                "async_depth": "1",        # one-frame pipeline depth
             }
         elif self.__encoder == "libx264":
             self.__pix_fmt = "yuv420p"
@@ -221,7 +228,8 @@ class H264Encoder(Encoder):
                 "level": "31",
                 "tune": "zerolatency",
             }
-            self.__target_bitrate = 1_000_000
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 1_000_000
         elif self.__encoder == "libopenh264":
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "Baseline"
@@ -229,7 +237,8 @@ class H264Encoder(Encoder):
                 "level": "31",
                 "tune": "zerolatency",
             }
-            self.__target_bitrate = 1_000_000
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 1_000_000
         else:
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "high"

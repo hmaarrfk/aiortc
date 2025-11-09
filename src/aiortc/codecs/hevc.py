@@ -187,7 +187,8 @@ class HEVCEncoder(Encoder):
             av.logging.set_level(av.logging.VERBOSE)
             self.__pix_fmt = "nv12"
             self.__codec_profile = "main"
-            self.__target_bitrate = 10_000_000
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 10_000_000
             self.__codec_options = {
                 "level": "51",  # or 153
                 "async_depth": "1",
@@ -213,15 +214,18 @@ class HEVCEncoder(Encoder):
         elif self.__encoder == "hevc_nvenc":
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "main"
-            self.__target_bitrate = 3_000_000
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 3_000_000
             self.__codec_options = {
                 "level": "5.1",
                 "tune": "ull",
-                "rc": "cbr_ld_hq",
+                # "rc": "cbr_ld_hq",
+                'rc': 'cbr',
+                'multipass': 'disabled',
                 "preset": "p1",
                 'b': str(self.target_bitrate),
-                'maxrate': str(int(self.target_bitrate / 3)),
-                'minrate': str(int(self.target_bitrate * 3)),
+                'maxrate': str(int(self.target_bitrate * 3)),
+                'minrate': str(int(self.target_bitrate / 3)),
                 'profile': 'main',
                 'bf': '0',
                 'b_adapt': '0',
@@ -233,6 +237,11 @@ class HEVCEncoder(Encoder):
                 'strict_gop': '1',
                 'forced-idr': '1',
                 'zerolatency': '1',
+
+                "g": "60",                 # shorter GOP keeps IDR cadence tight
+                "delay": "0",
+                "vbv_bufsize": str(self.target_bitrate // 2),  # critical for NVENC latency
+                "async_depth": "1",        # one-frame pipeline depth
             }
             print(f"[HEVC DEBUG] NVENC settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
         elif self.__encoder == "libx265":
@@ -243,13 +252,15 @@ class HEVCEncoder(Encoder):
                 "tune": "zerolatency",
                 "x265-params": "keyint=30:min-keyint=30:scenecut=0",
             }
-            self.__target_bitrate = 1_000_000
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 1_000_000
             print(f"[HEVC DEBUG] libx265 settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
         else:
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "main"
             self.__codec_options = {}
-            self.__target_bitrate = DEFAULT_BITRATE
+            if self.__target_bitrate is None:
+                self.__target_bitrate = DEFAULT_BITRATE
             print(f"[HEVC DEBUG] Default settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
 
     @staticmethod
@@ -475,7 +486,12 @@ class HEVCEncoder(Encoder):
         if abs(bitrate - self.__target_bitrate) > 0.05 * self.__target_bitrate:
             self.__needs_reconfigure = True
 
+        print(f"[HEVC DEBUG] Setting target bitrate to: {bitrate}")
+        print(f"[HEVC DEBUG] Current target bitrate: {self.__target_bitrate}")
         self.__target_bitrate = bitrate
+        self.__codec_options['b'] = str(bitrate)
+        self.__codec_options['maxrate'] = str(int(bitrate * 3))
+        self.__codec_options['minrate'] = str(int(bitrate / 3))
 
     @property
     def encoder(self) -> Optional[str]:
