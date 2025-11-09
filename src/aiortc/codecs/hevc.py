@@ -18,26 +18,23 @@ from .base import Decoder, Encoder
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BITRATE = 1000000  # 1 Mbps
-MIN_BITRATE = 500000  # 500 kbps
-MAX_BITRATE = 3000000  # 3 Mbps
-
-DEFAULT_BITRATE = 3_000_000  # 10 Mbps
-MIN_BITRATE = 1_000_000  # 1000 kbps
+DEFAULT_BITRATE = 3_000_000  # 3 Mbps
+MIN_BITRATE = 1_000_000  # 1 Mbps
 MAX_BITRATE = 30_000_000  # 30 Mbps
 
 MAX_FRAME_RATE = 30
 PACKET_MAX = 1300
 
-NAL_TYPE_FU_A = 28
-NAL_TYPE_STAP_A = 24
+# HEVC NAL unit types for RTP payload format (RFC 7798)
+NAL_TYPE_FU = 49  # Fragmentation Unit
+NAL_TYPE_AP = 48  # Aggregation Packet (STAP-A)
 
-NAL_HEADER_SIZE = 1
-FU_A_HEADER_SIZE = 2
+NAL_HEADER_SIZE = 2  # HEVC uses 2-byte NAL unit header
+FU_HEADER_SIZE = 3  # FU indicator (1) + FU header (2)
 LENGTH_FIELD_SIZE = 2
-STAP_A_HEADER_SIZE = NAL_HEADER_SIZE + LENGTH_FIELD_SIZE
+AP_HEADER_SIZE = NAL_HEADER_SIZE + LENGTH_FIELD_SIZE
 
-DESCRIPTOR_T = TypeVar("DESCRIPTOR_T", bound="H264PayloadDescriptor")
+DESCRIPTOR_T = TypeVar("DESCRIPTOR_T", bound="HEVCPayloadDescriptor")
 T = TypeVar("T")
 
 
@@ -47,54 +44,74 @@ def pairwise(iterable: Sequence[T]) -> Iterator[tuple[T, T]]:
     return zip(a, b)
 
 
-class H264PayloadDescriptor:
+class HEVCPayloadDescriptor:
     def __init__(self, first_fragment: bool) -> None:
         self.first_fragment = first_fragment
 
     def __repr__(self) -> str:
-        return f"H264PayloadDescriptor(FF={self.first_fragment})"
+        return f"HEVCPayloadDescriptor(FF={self.first_fragment})"
 
     @classmethod
     def parse(cls: Type[DESCRIPTOR_T], data: bytes) -> tuple[DESCRIPTOR_T, bytes]:
         output = bytes()
 
-        # NAL unit header
-        if len(data) < 2:
-            raise ValueError("NAL unit is too short")
-        nal_type = data[0] & 0x1F
-        f_nri = data[0] & (0x80 | 0x60)
+        # HEVC NAL unit header (2 bytes)
+        if len(data) < 3:
+            raise ValueError("HEVC NAL unit is too short")
+
+        # First byte: F(1) + Type(6) + LayerID(6)
+        # For RTP, we extract type from lower 6 bits
+        nal_type = (data[0] >> 1) & 0x3F
+        f_nri = data[0] & 0x81  # F bit and reserved bits
+        layer_id = ((data[0] & 0x01) << 5) | ((data[1] >> 3) & 0x1F)
         pos = NAL_HEADER_SIZE
 
-        if nal_type in range(1, 24):
-            # single NAL unit
+        if nal_type < 32:
+            # single NAL unit (types 0-31)
             output = bytes([0, 0, 0, 1]) + data
             obj = cls(first_fragment=True)
-        elif nal_type == NAL_TYPE_FU_A:
+        elif nal_type == NAL_TYPE_FU:
             # fragmentation unit
-            original_nal_type = data[pos] & 0x1F
-            first_fragment = bool(data[pos] & 0x80)
+            if len(data) < pos + 2:
+                raise ValueError("HEVC FU-A header is truncated")
+
+            # FU header: S(1) + E(1) + Type(6) + reserved
+            fu_header = data[pos]
+            start_bit = (fu_header >> 7) & 0x01
+            end_bit = (fu_header >> 6) & 0x01
+            original_nal_type = fu_header & 0x3F
             pos += 1
 
+            # Second byte of FU header (layer info)
+            fu_header2 = data[pos]
+            pos += 1
+
+            first_fragment = bool(start_bit)
+
             if first_fragment:
-                original_nal_header = bytes([f_nri | original_nal_type])
+                # Reconstruct original NAL unit header
+                original_nal_header = bytes([
+                    (f_nri & 0x81) | ((original_nal_type << 1) & 0xFE) | (layer_id >> 5),
+                    ((layer_id << 3) & 0xF8) | (data[1] & 0x07)
+                ])
                 output += bytes([0, 0, 0, 1])
                 output += original_nal_header
             output += data[pos:]
 
             obj = cls(first_fragment=first_fragment)
-        elif nal_type == NAL_TYPE_STAP_A:
-            # single time aggregation packet
+        elif nal_type == NAL_TYPE_AP:
+            # aggregation packet (STAP-A)
             offsets = []
             while pos < len(data):
                 if len(data) < pos + LENGTH_FIELD_SIZE:
-                    raise ValueError("STAP-A length field is truncated")
+                    raise ValueError("HEVC AP length field is truncated")
                 nalu_size = unpack_from("!H", data, pos)[0]
                 pos += LENGTH_FIELD_SIZE
                 offsets.append(pos)
 
                 pos += nalu_size
                 if len(data) < pos:
-                    raise ValueError("STAP-A data is truncated")
+                    raise ValueError("HEVC AP data is truncated")
 
             offsets.append(len(data) + LENGTH_FIELD_SIZE)
             for start, end in pairwise(offsets):
@@ -104,14 +121,14 @@ class H264PayloadDescriptor:
 
             obj = cls(first_fragment=True)
         else:
-            raise ValueError(f"NAL unit type {nal_type} is not supported")
+            raise ValueError(f"HEVC NAL unit type {nal_type} is not supported")
 
         return obj, output
 
 
-class H264Decoder(Decoder):
+class HEVCDecoder(Decoder):
     def __init__(self) -> None:
-        self.codec = av.CodecContext.create("h264", "r")
+        self.codec = av.CodecContext.create("hevc", "r")
 
     def decode(self, encoded_frame: JitterFrame) -> list[Frame]:
         try:
@@ -121,12 +138,12 @@ class H264Decoder(Decoder):
             return cast(list[Frame], self.codec.decode(packet))
         except av.FFmpegError as e:
             logger.warning(
-                "H264Decoder() failed to decode, skipping package: " + str(e)
+                "HEVCDecoder() failed to decode, skipping package: " + str(e)
             )
             return []
 
 
-class H264Encoder(Encoder):
+class HEVCEncoder(Encoder):
     def __init__(self) -> None:
         from ._ffmpeg_test_encoder import ffmpeg_test_encoder
         self.buffer_data = b""
@@ -137,71 +154,75 @@ class H264Encoder(Encoder):
         self.__target_bitrate: Optional[int] = None
         self.codec: Optional[VideoCodecContext] = None
 
+        print(f"[HEVC DEBUG] Initializing HEVCEncoder, testing available encoders...")
+        selected_encoder = None
         for encoder in [
-            "h264_nvenc", "h264_qsv", "libx264", "libopenh264",
+            "hevc_nvenc", "hevc_qsv", "libx265",
         ]:
             try:
+                print(f"[HEVC DEBUG] Testing encoder: {encoder}")
                 if ffmpeg_test_encoder(encoder):
+                    print(f"[HEVC DEBUG] ✓ Encoder {encoder} is available and will be used")
+                    selected_encoder = encoder
                     break
+                else:
+                    print(f"[HEVC DEBUG] ✗ Encoder {encoder} is not available")
             except Exception as e:
+                print(f"[HEVC DEBUG] ✗ Error testing encoder {encoder}: {e}")
                 import traceback
                 traceback.print_exc()
                 raise e
 
-        self.__encoder = encoder
+        if not selected_encoder:
+            raise RuntimeError("No HEVC encoder available (tested: hevc_nvenc, hevc_qsv, libx265)")
+
+        self.__encoder = selected_encoder
+        print(f"[HEVC DEBUG] Selected encoder: {self.__encoder}")
         self._reset_encoder_settings()
+        print(f"[HEVC DEBUG] HEVCEncoder initialized successfully with encoder: {self.__encoder}")
 
     def _reset_encoder_settings(self) -> None:
-        if self.__encoder == "h264_qsv":
+        print(f"[HEVC DEBUG] Resetting encoder settings for: {self.__encoder}")
+        if self.__encoder == "hevc_qsv":
+            av.logging.set_level(av.logging.VERBOSE)
             self.__pix_fmt = "nv12"
-            self.__codec_profile = "high"
+            self.__codec_profile = "main"
             self.__target_bitrate = 10_000_000
             self.__codec_options = {
-                "level": "61",
-                "tune": "zerolatency",
+                "level": "51",  # or 153
+                "async_depth": "1",
                 "bf": "0",
+                'rc': 'cbr',
                 "b_strategy": "0",
-
                 "forced_idr": "1",
                 "idr_interval": "1",
-
                 "p_strategy": "0",
-
-                # "adaptive_i": "0",
                 "adaptive_b": "0",
-                "async_depth": "1",
-
-                "look_ahead": "0",
                 "extbrc": "0",
+                "async_depth": "1",
+                "look_ahead": "0",
                 "low_delay_brc": "1",
+                "strict_gop": "1",
                 'b': str(self.target_bitrate),
-                'maxrate': str(int(self.target_bitrate * 3)),
-                'minrate': str(int(self.target_bitrate / 3)),
-                'rc': 'cbr',
-
-                "profile": "high",
+                'maxrate': str(self.target_bitrate),
+                'minrate': str(self.target_bitrate),
+                "profile": "main",
+                'tier': 'high',
             }
-        elif self.__encoder == "h264_nvenc":
-            av.logging.set_level(av.logging.VERBOSE)
+            print(f"[HEVC DEBUG] QSV settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
+        elif self.__encoder == "hevc_nvenc":
             self.__pix_fmt = "yuv420p"
-            self.__codec_profile = "high"
-            self.__target_bitrate = 5_000_000
-            bitrate = 5_000_000
+            self.__codec_profile = "main"
+            self.__target_bitrate = 3_000_000
             self.__codec_options = {
-                "level": "6.2",
-                "tune": "ull",             # closest to zerolatency for NVENC
-                # cbr doesn't seem to work???
-                # "rc": "vbr",              # or "vbr", depending on your needs
-                # "rc": "cbr_ld_hq",
-                'rc': 'cbr',
-                'multipass': 'disabled',
-
-                "preset": "p1",           # p1 = lowest latency, p7 = highest quality
-                'b': str(bitrate),
-                'maxrate': str(bitrate),
-                'minrate': str(bitrate),
-                'profile': 'high',
-
+                "level": "5.1",
+                "tune": "ull",
+                "rc": "cbr_ld_hq",
+                "preset": "p1",
+                'b': str(self.target_bitrate),
+                'maxrate': str(int(self.target_bitrate / 3)),
+                'minrate': str(int(self.target_bitrate * 3)),
+                'profile': 'main',
                 'bf': '0',
                 'b_adapt': '0',
                 'rc-lookahead': '0',
@@ -211,48 +232,52 @@ class H264Encoder(Encoder):
                 'no-scenecut': '1',
                 'strict_gop': '1',
                 'forced-idr': '1',
-                'g': '60',
                 'zerolatency': '1',
             }
-        elif self.__encoder == "libx264":
+            print(f"[HEVC DEBUG] NVENC settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
+        elif self.__encoder == "libx265":
             self.__pix_fmt = "yuv420p"
-            self.__codec_profile = "Baseline"
+            self.__codec_profile = "main"
             self.__codec_options = {
-                "level": "31",
+                "level": "5.1",
                 "tune": "zerolatency",
+                "x265-params": "keyint=30:min-keyint=30:scenecut=0",
             }
             self.__target_bitrate = 1_000_000
-        elif self.__encoder == "libopenh264":
-            self.__pix_fmt = "yuv420p"
-            self.__codec_profile = "Baseline"
-            self.__codec_options = {
-                "level": "31",
-                "tune": "zerolatency",
-            }
-            self.__target_bitrate = 1_000_000
+            print(f"[HEVC DEBUG] libx265 settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
         else:
             self.__pix_fmt = "yuv420p"
-            self.__codec_profile = "high"
+            self.__codec_profile = "main"
             self.__codec_options = {}
             self.__target_bitrate = DEFAULT_BITRATE
-
+            print(f"[HEVC DEBUG] Default settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
 
     @staticmethod
-    def _packetize_fu_a(data: bytes) -> list[bytes]:
-        available_size = PACKET_MAX - FU_A_HEADER_SIZE
+    def _packetize_fu(data: bytes) -> list[bytes]:
+        available_size = PACKET_MAX - FU_HEADER_SIZE
         payload_size = len(data) - NAL_HEADER_SIZE
         num_packets = math.ceil(payload_size / available_size)
         num_larger_packets = payload_size % num_packets
         package_size = payload_size // num_packets
 
-        f_nri = data[0] & (0x80 | 0x60)  # fni of original header
-        nal = data[0] & 0x1F
+        # Extract NAL unit header info
+        nal_header_byte1 = data[0]
+        nal_header_byte2 = data[1]
+        nal_type = (nal_header_byte1 >> 1) & 0x3F
+        f_nri = nal_header_byte1 & 0x81
+        layer_id = ((nal_header_byte1 & 0x01) << 5) | ((nal_header_byte2 >> 3) & 0x1F)
 
-        fu_indicator = f_nri | NAL_TYPE_FU_A
+        # FU indicator (2 bytes): F(1) + Type(6) + LayerID(6) + TID(3) + reserved(3)
+        # Type is set to NAL_TYPE_FU (49)
+        fu_indicator = bytes([
+            (f_nri & 0x81) | ((NAL_TYPE_FU << 1) & 0xFE) | (layer_id >> 5),
+            ((layer_id << 3) & 0xF8) | (nal_header_byte2 & 0x07)
+        ])
 
-        fu_header_end = bytes([fu_indicator, nal | 0x40])
-        fu_header_middle = bytes([fu_indicator, nal])
-        fu_header_start = bytes([fu_indicator, nal | 0x80])
+        # FU header (1 byte): S(1) + E(1) + Type(6)
+        fu_header_end = (nal_type & 0x3F) | 0x40  # E bit set
+        fu_header_middle = nal_type & 0x3F
+        fu_header_start = (nal_type & 0x3F) | 0x80  # S bit set
         fu_header = fu_header_start
 
         packages = []
@@ -269,7 +294,7 @@ class H264Encoder(Encoder):
             if offset == len(data):
                 fu_header = fu_header_end
 
-            packages.append(fu_header + payload)
+            packages.append(fu_indicator + bytes([fu_header]) + payload)
 
             fu_header = fu_header_middle
         assert offset == len(data), "incorrect fragment data"
@@ -277,23 +302,35 @@ class H264Encoder(Encoder):
         return packages
 
     @staticmethod
-    def _packetize_stap_a(
+    def _packetize_ap(
         data: bytes, packages_iterator: Iterator[bytes]
     ) -> tuple[bytes, bytes]:
         counter = 0
-        available_size = PACKET_MAX - STAP_A_HEADER_SIZE
+        available_size = PACKET_MAX - AP_HEADER_SIZE
 
-        stap_header = NAL_TYPE_STAP_A | (data[0] & 0xE0)
+        # AP header starts with FU indicator (NAL_TYPE_AP)
+        ap_header_byte1 = data[0]
+        ap_header_byte2 = data[1]
+        f_nri = ap_header_byte1 & 0x81
+        layer_id = ((ap_header_byte1 & 0x01) << 5) | ((ap_header_byte2 >> 3) & 0x1F)
+
+        ap_header = bytes([
+            (f_nri & 0x81) | ((NAL_TYPE_AP << 1) & 0xFE) | (layer_id >> 5),
+            ((layer_id << 3) & 0xF8) | (ap_header_byte2 & 0x07)
+        ])
 
         payload = bytes()
         try:
             nalu = data  # with header
             while len(nalu) <= available_size and counter < 9:
-                stap_header |= nalu[0] & 0x80
+                # Update F and NRI bits from aggregated NAL units
+                nalu_f_nri = nalu[0] & 0x81
+                if (ap_header[0] & 0x80) == 0 and (nalu_f_nri & 0x80) != 0:
+                    ap_header = bytes([ap_header[0] | 0x80, ap_header[1]])
 
                 nri = nalu[0] & 0x60
-                if stap_header & 0x60 < nri:
-                    stap_header = stap_header & 0x9F | nri
+                if (ap_header[0] & 0x60) < nri:
+                    ap_header = bytes([(ap_header[0] & 0x9F) | nri, ap_header[1]])
 
                 available_size -= LENGTH_FIELD_SIZE + len(nalu)
                 counter += 1
@@ -308,11 +345,11 @@ class H264Encoder(Encoder):
         if counter <= 1:
             return data, nalu
         else:
-            return bytes([stap_header]) + payload, nalu
+            return ap_header + payload, nalu
 
     @staticmethod
     def _split_bitstream(buf: bytes) -> Iterator[bytes]:
-        # Translated from: https://github.com/aizvorski/h264bitstream/blob/master/h264_nal.c#L134
+        # HEVC uses the same start code pattern as H.264
         i = 0
         while True:
             # Find the start of the NAL unit.
@@ -346,10 +383,10 @@ class H264Encoder(Encoder):
         package = next(packages_iterator, None)
         while package is not None:
             if len(package) > PACKET_MAX:
-                packetized_packages.extend(cls._packetize_fu_a(package))
+                packetized_packages.extend(cls._packetize_fu(package))
                 package = next(packages_iterator, None)
             else:
-                packetized, package = cls._packetize_stap_a(package, packages_iterator)
+                packetized, package = cls._packetize_ap(package, packages_iterator)
                 packetized_packages.append(packetized)
 
         return packetized_packages
@@ -375,8 +412,8 @@ class H264Encoder(Encoder):
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
+            self.__needs_reconfigure = False
             try:
-                self.__needs_reconfigure = False
                 os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
                 print(f"Creating new {self.encoder}")
                 self.codec = av.CodecContext.create(self.encoder, "w")
@@ -405,7 +442,7 @@ class H264Encoder(Encoder):
                 for package in self.codec.encode(frame)
             )
         except Exception as e:
-            print(e)
+            print(f"[HEVC DEBUG] ERROR encoding frame: {e}")
             raise e
 
         if data_to_send:
@@ -434,10 +471,6 @@ class H264Encoder(Encoder):
 
     @target_bitrate.setter
     def target_bitrate(self, bitrate: int) -> None:
-        # bitrate = max(MIN_BITRATE, min(bitrate, MAX_BITRATE))
-        # print(f"Requesting bitrate {bitrate:,}")
-        # bitrate = int(DEFAULT_BITRATE)
-
         # we only adjust bitrate if it changes by over 5%
         if abs(bitrate - self.__target_bitrate) > 0.05 * self.__target_bitrate:
             self.__needs_reconfigure = True
@@ -459,7 +492,6 @@ class H264Encoder(Encoder):
 
         if value != old_encoder:
             self.__needs_reconfigure = True
-            # Hmm... is this the right way?
             self._reset_encoder_settings()
 
     @property
@@ -494,6 +526,6 @@ class H264Encoder(Encoder):
         self.__codec_options = value
 
 
-def h264_depayload(payload: bytes) -> bytes:
-    descriptor, data = H264PayloadDescriptor.parse(payload)
+def hevc_depayload(payload: bytes) -> bytes:
+    descriptor, data = HEVCPayloadDescriptor.parse(payload)
     return data

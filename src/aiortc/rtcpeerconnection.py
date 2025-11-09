@@ -144,6 +144,11 @@ def is_codec_compatible(a: RTCRtpCodecParameters, b: RTCRtpCodecParameters) -> b
         except ValueError:
             return False
 
+    # HEVC/H265 compatibility is simpler - just matching codec name and clock rate
+    # is typically sufficient (no profile-level-id complexity like H264)
+    if a.mimeType.lower() in ("video/h265", "video/hevc"):
+        return True
+
     return True
 
 

@@ -13,6 +13,7 @@ from .base import Decoder, Encoder
 from .g711 import PcmaDecoder, PcmaEncoder, PcmuDecoder, PcmuEncoder
 from .g722 import G722Decoder, G722Encoder
 from .h264 import H264Decoder, H264Encoder, h264_depayload
+from .hevc import HEVCDecoder, HEVCEncoder, hevc_depayload
 from .opus import OpusDecoder, OpusEncoder
 from .vpx import Vp8Decoder, Vp8Encoder, vp8_depayload
 
@@ -92,6 +93,8 @@ def init_codecs() -> None:
         ]
         dynamic_pt += 2
 
+    # Add HEVC/H265 codec first (highest priority)
+    add_video_codec("video/H265")
     add_video_codec("video/VP8")
     for profile_level_id in ("42001f", "42e01f"):
         add_video_codec(
@@ -109,6 +112,8 @@ def depayload(codec: RTCRtpCodecParameters, payload: bytes) -> bytes:
         return vp8_depayload(payload)
     elif codec.name == "H264":
         return h264_depayload(payload)
+    elif codec.name == "H265":
+        return hevc_depayload(payload)
     else:
         return payload
 
@@ -156,6 +161,8 @@ def get_decoder(codec: RTCRtpCodecParameters) -> Decoder:
         return PcmaDecoder()
     elif mimeType == "audio/pcmu":
         return PcmuDecoder()
+    elif mimeType == "video/h265" or mimeType == "video/hevc":
+        return HEVCDecoder()
     elif mimeType == "video/h264":
         return H264Decoder()
     elif mimeType == "video/vp8":
@@ -175,6 +182,8 @@ def get_encoder(codec: RTCRtpCodecParameters) -> Encoder:
         return PcmaEncoder()
     elif mimeType == "audio/pcmu":
         return PcmuEncoder()
+    elif mimeType == "video/h265" or mimeType == "video/hevc":
+        return HEVCEncoder()
     elif mimeType == "video/h264":
         return H264Encoder()
     elif mimeType == "video/vp8":
