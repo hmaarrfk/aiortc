@@ -387,23 +387,15 @@ class H264Encoder(Encoder):
             try:
                 self.__needs_reconfigure = False
                 os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
-                print(f"Creating new {self.encoder}")
                 self.codec = av.CodecContext.create(self.encoder, "w")
-                print(f"{frame.width=}")
                 self.codec.width = frame.width
-                print(f"{frame.height=}")
                 self.codec.height = frame.height
-                print(f"{self.target_bitrate}")
                 self.codec.bit_rate = self.target_bitrate
-                print(f"{self.pix_fmt}")
                 self.codec.pix_fmt = self.pix_fmt
                 self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
                 self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
-                print(f"{self.codec_options}")
                 self.codec.options = self.codec_options
-                print(f"{self.codec_profile}")
                 self.codec.profile = self.codec_profile
-                print(f"done reconfigure")
             except Exception as e:
                 print(e)
                 raise e

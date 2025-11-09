@@ -154,21 +154,15 @@ class HEVCEncoder(Encoder):
         self.__target_bitrate: Optional[int] = None
         self.codec: Optional[VideoCodecContext] = None
 
-        print(f"[HEVC DEBUG] Initializing HEVCEncoder, testing available encoders...")
         selected_encoder = None
         for encoder in [
             "hevc_nvenc", "hevc_qsv", "libx265",
         ]:
             try:
-                print(f"[HEVC DEBUG] Testing encoder: {encoder}")
                 if ffmpeg_test_encoder(encoder):
-                    print(f"[HEVC DEBUG] ✓ Encoder {encoder} is available and will be used")
                     selected_encoder = encoder
                     break
-                else:
-                    print(f"[HEVC DEBUG] ✗ Encoder {encoder} is not available")
             except Exception as e:
-                print(f"[HEVC DEBUG] ✗ Error testing encoder {encoder}: {e}")
                 import traceback
                 traceback.print_exc()
                 raise e
@@ -177,12 +171,9 @@ class HEVCEncoder(Encoder):
             raise RuntimeError("No HEVC encoder available (tested: hevc_nvenc, hevc_qsv, libx265)")
 
         self.__encoder = selected_encoder
-        print(f"[HEVC DEBUG] Selected encoder: {self.__encoder}")
         self._reset_encoder_settings()
-        print(f"[HEVC DEBUG] HEVCEncoder initialized successfully with encoder: {self.__encoder}")
 
     def _reset_encoder_settings(self) -> None:
-        print(f"[HEVC DEBUG] Resetting encoder settings for: {self.__encoder}")
         if self.__encoder == "hevc_qsv":
             av.logging.set_level(av.logging.VERBOSE)
             self.__pix_fmt = "nv12"
@@ -210,7 +201,6 @@ class HEVCEncoder(Encoder):
                 "profile": "main",
                 'tier': 'high',
             }
-            print(f"[HEVC DEBUG] QSV settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
         elif self.__encoder == "hevc_nvenc":
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "main"
@@ -243,7 +233,6 @@ class HEVCEncoder(Encoder):
                 "vbv_bufsize": str(self.target_bitrate // 2),  # critical for NVENC latency
                 "async_depth": "1",        # one-frame pipeline depth
             }
-            print(f"[HEVC DEBUG] NVENC settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
         elif self.__encoder == "libx265":
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "main"
@@ -254,14 +243,12 @@ class HEVCEncoder(Encoder):
             }
             if self.__target_bitrate is None:
                 self.__target_bitrate = 1_000_000
-            print(f"[HEVC DEBUG] libx265 settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
         else:
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "main"
             self.__codec_options = {}
             if self.__target_bitrate is None:
                 self.__target_bitrate = DEFAULT_BITRATE
-            print(f"[HEVC DEBUG] Default settings: pix_fmt={self.__pix_fmt}, profile={self.__codec_profile}, bitrate={self.__target_bitrate}")
 
     @staticmethod
     def _packetize_fu(data: bytes) -> list[bytes]:
@@ -426,23 +413,15 @@ class HEVCEncoder(Encoder):
             self.__needs_reconfigure = False
             try:
                 os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
-                print(f"Creating new {self.encoder}")
                 self.codec = av.CodecContext.create(self.encoder, "w")
-                print(f"{frame.width=}")
                 self.codec.width = frame.width
-                print(f"{frame.height=}")
                 self.codec.height = frame.height
-                print(f"{self.target_bitrate}")
                 self.codec.bit_rate = self.target_bitrate
-                print(f"{self.pix_fmt}")
                 self.codec.pix_fmt = self.pix_fmt
                 self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
                 self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
-                print(f"{self.codec_options}")
                 self.codec.options = self.codec_options
-                print(f"{self.codec_profile}")
                 self.codec.profile = self.codec_profile
-                print(f"done reconfigure")
             except Exception as e:
                 print(e)
                 raise e
@@ -486,8 +465,6 @@ class HEVCEncoder(Encoder):
         if abs(bitrate - self.__target_bitrate) > 0.05 * self.__target_bitrate:
             self.__needs_reconfigure = True
 
-        print(f"[HEVC DEBUG] Setting target bitrate to: {bitrate}")
-        print(f"[HEVC DEBUG] Current target bitrate: {self.__target_bitrate}")
         self.__target_bitrate = bitrate
         self.__codec_options['b'] = str(bitrate)
         self.__codec_options['maxrate'] = str(int(bitrate * 3))
