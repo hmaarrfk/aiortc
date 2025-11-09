@@ -175,26 +175,31 @@ class H264Encoder(Encoder):
                 "extbrc": "0",
                 "low_delay_brc": "1",
                 'b': str(self.target_bitrate),
-                'maxrate': str(int(self.target_bitrate / 3)),
-                'minrate': str(int(self.target_bitrate * 3)),
+                'maxrate': str(int(self.target_bitrate * 3)),
+                'minrate': str(int(self.target_bitrate / 3)),
                 'rc': 'cbr',
 
                 "profile": "high",
             }
         elif self.__encoder == "h264_nvenc":
+            av.logging.set_level(av.logging.VERBOSE)
             self.__pix_fmt = "yuv420p"
             self.__codec_profile = "high"
-            self.__target_bitrate = 3_000_000
+            self.__target_bitrate = 5_000_000
+            bitrate = 5_000_000
             self.__codec_options = {
-                "level": "4.2",
+                "level": "6.2",
                 "tune": "ull",             # closest to zerolatency for NVENC
                 # cbr doesn't seem to work???
                 # "rc": "vbr",              # or "vbr", depending on your needs
-                "rc": "cbr_ld_hq",
+                # "rc": "cbr_ld_hq",
+                'rc': 'cbr',
+                'multipass': 'disabled',
+
                 "preset": "p1",           # p1 = lowest latency, p7 = highest quality
-                'b': str(self.target_bitrate),
-                'maxrate': str(int(self.target_bitrate / 3)),
-                'minrate': str(int(self.target_bitrate * 3)),
+                'b': str(bitrate),
+                'maxrate': str(bitrate),
+                'minrate': str(bitrate),
                 'profile': 'high',
 
                 'bf': '0',
@@ -206,6 +211,7 @@ class H264Encoder(Encoder):
                 'no-scenecut': '1',
                 'strict_gop': '1',
                 'forced-idr': '1',
+                'g': '60',
                 'zerolatency': '1',
             }
         elif self.__encoder == "libx264":
@@ -369,22 +375,38 @@ class H264Encoder(Encoder):
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
-            self.__needs_reconfigure = False
-            os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
-            self.codec = av.CodecContext.create(self.encoder, "w")
-            self.codec.width = frame.width
-            self.codec.height = frame.height
-            self.codec.bit_rate = self.target_bitrate
-            self.codec.pix_fmt = self.pix_fmt
-            self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
-            self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
-            self.codec.options = self.codec_options
-            self.codec.profile = self.codec_profile
+            try:
+                self.__needs_reconfigure = False
+                os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
+                print(f"Creating new {self.encoder}")
+                self.codec = av.CodecContext.create(self.encoder, "w")
+                print(f"{frame.width=}")
+                self.codec.width = frame.width
+                print(f"{frame.height=}")
+                self.codec.height = frame.height
+                print(f"{self.target_bitrate}")
+                self.codec.bit_rate = self.target_bitrate
+                print(f"{self.pix_fmt}")
+                self.codec.pix_fmt = self.pix_fmt
+                self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
+                self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
+                print(f"{self.codec_options}")
+                self.codec.options = self.codec_options
+                print(f"{self.codec_profile}")
+                self.codec.profile = self.codec_profile
+                print(f"done reconfigure")
+            except Exception as e:
+                print(e)
+                raise e
 
-        data_to_send = b"".join(
-            bytes(package)
-            for package in self.codec.encode(frame)
-        )
+        try:
+            data_to_send = b"".join(
+                bytes(package)
+                for package in self.codec.encode(frame)
+            )
+        except Exception as e:
+            print(e)
+            raise e
 
         if data_to_send:
             yield from self._split_bitstream(data_to_send)
