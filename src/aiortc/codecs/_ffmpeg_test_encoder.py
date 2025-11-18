@@ -3,10 +3,28 @@
 # If shape is provided as a tuple, it is something
 # that can be hashed by lru_cache in order to  ensure
 # the function returns quickly the second time it is requested.
+from curses import keyname
 from functools import lru_cache
 import subprocess
+
+
+def ffmpeg_test_encoder(
+    encoder,
+    parameters=None,
+):
+    if parameters is None:
+        parameters = {}
+
+    extra_codec_arguments = ()
+    for key, value in parameters.items():
+        extra_codec_arguments += (f'-{key}:v', str(value))
+
+    return _ffmpeg_test_encoder(encoder, extra_codec_arguments)
+
 @lru_cache
-def ffmpeg_test_encoder(encoder):
+def _ffmpeg_test_encoder(encoder, extra_codec_arguments=None):
+    if extra_codec_arguments is None:
+        extra_codec_arguments = ()
     # Note that images smaller than 256 x 256 may not be compatible
     # with all encoders
     shape = (256, 256)
@@ -22,9 +40,11 @@ def ffmpeg_test_encoder(encoder):
         # this makes a different for small videos with h264_nvenc
         "-i", f"nullsrc=s={shape[1]}x{shape[0]}:d=8",
         "-vcodec", encoder,
+    ] + list(extra_codec_arguments) + [
         "-f", "null",
         "-",
     ]
+    print(cmd)
     p = subprocess.run(
         cmd,
         stdin=subprocess.PIPE,
@@ -32,4 +52,3 @@ def ffmpeg_test_encoder(encoder):
         check=False,
     )
     return p.returncode == 0
-

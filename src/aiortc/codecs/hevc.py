@@ -144,7 +144,14 @@ class HEVCDecoder(Decoder):
 
 
 class HEVCEncoder(Encoder):
-    def __init__(self) -> None:
+    def __init__(self, parameters=None) -> None:
+        if parameters is None:
+            parameters = {}
+
+        if (profile_id := parameters.get('profile-id', '1')) != '1':
+            raise ValueError(f"Profile ID {profile_id} is not supported, must be '1'")
+
+        self.__parameters = parameters
         from ._ffmpeg_test_encoder import ffmpeg_test_encoder
         self.buffer_data = b""
         self.buffer_pts: Optional[int] = None
@@ -174,16 +181,45 @@ class HEVCEncoder(Encoder):
             raise RuntimeError("No HEVC encoder available (tested: hevc_nvenc, hevc_qsv, libx265)")
 
         self.__encoder = selected_encoder
-        self._reset_encoder_settings()
+        try:
+            self._reset_encoder_settings()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._reset_encoder_settings()
 
     def _reset_encoder_settings(self) -> None:
+        profile_id = self.__parameters.get('profile-id', '1')
+        if profile_id == '1':
+            profile = 'main'
+        elif profile_id == '2':
+            profile = 'main10'
+        else:
+            raise ValueError(f"Profile ID {profile} is not supported, must be '1' or '2'")
+
+        level_id = self.__parameters.get('level-id', '186')
+        if level_id == '186':
+            level = '6.2'
+        else:
+            raise ValueError(f"Level ID {level_id} is not supported, must be '186'")
+
+        tier_id = self.__parameters.get('level-id', '0')
+        if tier_id == '1':
+            tier = 'high'
+        else:
+            tier = 'main'
+
+        self.__codec_profile = profile
+
         if self.__encoder == "hevc_qsv":
             av.logging.set_level(av.logging.VERBOSE)
             self.__pix_fmt = "nv12"
-            self.__codec_profile = "main"
             if self.__target_bitrate is None:
-                self.__target_bitrate = 10_000_000
+                self.__target_bitrate = 1_000_000
+            print(f"{self.__target_bitrate:=}")
             self.__codec_options = {
+                # I feel like hevc uses these numbers without a period
+                # "level": level_id.replace('.', ''),
                 "level": "51",  # or 153
                 "async_depth": "1",
                 "bf": "0",
@@ -207,16 +243,16 @@ class HEVCEncoder(Encoder):
                 'b': str(self.target_bitrate),
                 'maxrate': str(self.target_bitrate),
                 'minrate': str(self.target_bitrate),
-                "profile": "main",
-                'tier': 'high',
+                "profile": profile,
+                'tier': tier,
             }
         elif self.__encoder == "hevc_nvenc":
             self.__pix_fmt = "yuv420p"
-            self.__codec_profile = "main"
             if self.__target_bitrate is None:
                 self.__target_bitrate = 3_000_000
             self.__codec_options = {
-                "level": "5.1",
+                "level": level,
+                "tier": tier,
                 "tune": "ull",
                 # "rc": "cbr_ld_hq",
                 'rc': 'cbr',
@@ -225,7 +261,7 @@ class HEVCEncoder(Encoder):
                 'b': str(self.target_bitrate),
                 'maxrate': str(int(self.target_bitrate * 3)),
                 'minrate': str(int(self.target_bitrate / 3)),
-                'profile': 'main',
+                'profile': profile,
                 'bf': '0',
                 'b_adapt': '0',
                 'rc-lookahead': '0',
@@ -244,9 +280,10 @@ class HEVCEncoder(Encoder):
             }
         elif self.__encoder == "libx265":
             self.__pix_fmt = "yuv420p"
-            self.__codec_profile = "main"
             self.__codec_options = {
-                "level": "5.1",
+                "level": level,
+                'profile': profile,
+                "tier": tier,
                 "tune": "zerolatency",
                 "x265-params": "keyint=30:min-keyint=30:scenecut=0",
             }
@@ -254,7 +291,6 @@ class HEVCEncoder(Encoder):
                 self.__target_bitrate = 1_000_000
         else:
             self.__pix_fmt = "yuv420p"
-            self.__codec_profile = "main"
             self.__codec_options = {}
             if self.__target_bitrate is None:
                 self.__target_bitrate = DEFAULT_BITRATE

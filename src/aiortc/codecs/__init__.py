@@ -94,7 +94,26 @@ def init_codecs() -> None:
         dynamic_pt += 2
 
     # Add HEVC/H265 codec first (highest priority)
-    add_video_codec("video/H265")
+    add_video_codec(
+        "video/H265",
+        # 'level-id=186;profile-id=2;tier-flag=0;tx-mode=SRST'
+        {
+            "level-id": "186",
+            "profile-id": "2",
+            "tier-flag": "0",
+            "tx-mode": "SRST",
+        }
+    )
+    add_video_codec(
+        "video/H265",
+        # 'level-id=186;profile-id=2;tier-flag=0;tx-mode=SRST'
+        {
+            "level-id": "186",
+            "profile-id": "1",
+            "tier-flag": "0",
+            "tx-mode": "SRST",
+        }
+    )
     add_video_codec("video/VP8")
     for profile_level_id in ("42001f", "42e01f"):
         add_video_codec(
@@ -183,7 +202,7 @@ def get_encoder(codec: RTCRtpCodecParameters) -> Encoder:
     elif mimeType == "audio/pcmu":
         return PcmuEncoder()
     elif mimeType == "video/h265" or mimeType == "video/hevc":
-        return HEVCEncoder()
+        return HEVCEncoder(parameters=codec.parameters)
     elif mimeType == "video/h264":
         return H264Encoder()
     elif mimeType == "video/vp8":
