@@ -155,13 +155,13 @@ def is_codec_compatible(a: RTCRtpCodecParameters, b: RTCRtpCodecParameters) -> b
             return l
 
         def profile_id(c: RTCRtpCodecParameters) -> Optional[int]:
-            p = c.parameters.get("profile-id")
+            p = c.parameters.get("profile-id", "1")
             if p is not None:
                 p = int(p)
             return p
 
         def tier_flag(c: RTCRtpCodecParameters) -> Optional[int]:
-            t = c.parameters.get("tier-flag")
+            t = c.parameters.get("tier-flag", "1")
             if t is not None:
                 t = int(t)
             return t
