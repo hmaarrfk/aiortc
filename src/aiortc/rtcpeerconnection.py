@@ -161,7 +161,7 @@ def is_codec_compatible(a: RTCRtpCodecParameters, b: RTCRtpCodecParameters) -> b
             return p
 
         def tier_flag(c: RTCRtpCodecParameters) -> Optional[int]:
-            t = c.parameters.get("tier-flag", "1")
+            t = c.parameters.get("tier-flag", "0")
             if t is not None:
                 t = int(t)
             return t
@@ -172,6 +172,7 @@ def is_codec_compatible(a: RTCRtpCodecParameters, b: RTCRtpCodecParameters) -> b
                 t = str(t)
             return t
 
+        print(f"{a} {a.parameters} vs {b} {b.parameters}")
         return (
             # level id indicates the maximum level supported by the decoder
             # We can decrease the level id to match
