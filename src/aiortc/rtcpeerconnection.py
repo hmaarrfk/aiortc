@@ -144,6 +144,45 @@ def is_codec_compatible(a: RTCRtpCodecParameters, b: RTCRtpCodecParameters) -> b
         except ValueError:
             return False
 
+    # HEVC/H265 compatibility is simpler - just matching codec name and clock rate
+    # is typically sufficient (no profile-level-id complexity like H264)
+    if a.mimeType.lower() in ("video/h265", "video/hevc"):
+        # 'level-id=186;profile-id=2;tier-flag=0;tx-mode=SRST'
+        def level_id(c: RTCRtpCodecParameters) -> Optional[int]:
+            l = c.parameters.get("level-id")
+            if l is not None:
+                l = int(l)
+            return l
+
+        def profile_id(c: RTCRtpCodecParameters) -> Optional[int]:
+            p = c.parameters.get("profile-id", "1")
+            if p is not None:
+                p = int(p)
+            return p
+
+        def tier_flag(c: RTCRtpCodecParameters) -> Optional[int]:
+            t = c.parameters.get("tier-flag", "0")
+            if t is not None:
+                t = int(t)
+            return t
+
+        def tx_mode(c: RTCRtpCodecParameters) -> Optional[str]:
+            t = c.parameters.get("tx-mode")
+            if t is not None:
+                t = str(t)
+            return t
+
+        return (
+            # level id indicates the maximum level supported by the decoder
+            # We can decrease the level id to match
+            # level_id(a) == level_id(b) and
+            # profile indicates 8 bit vs 10 bit
+            profile_id(a) == profile_id(b) and
+            # tier is high vs low -- perhaps loosen this check
+            tier_flag(a) == tier_flag(b) and
+            tx_mode(a) == tx_mode(b)
+        )
+
     return True
 
 

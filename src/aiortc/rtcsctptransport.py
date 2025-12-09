@@ -1652,7 +1652,22 @@ class RTCSctpTransport(AsyncIOEventEmitter):
                 # queue a stream reset
                 self._reconfig_queue.append(channel.id)
                 if len(self._reconfig_queue) == 1:
-                    asyncio.ensure_future(self._transmit_reconfig())
+                    # Task exception was never retrieved
+                    # future: <Task finished name='Task-390' coro=<RTCSctpTransport._transmit_reconfig() done, defined at /home/mark/miniforge3/envs/dev/lib/python3.12/site-packages/aiortc/rtcsctptransport.py:1570> exception=ConnectionError('Cannot send encrypted data, not connected')>
+                    # Traceback (most recent call last):
+                    #   File "/home/mark/miniforge3/envs/dev/lib/python3.12/site-packages/aiortc/rtcsctptransport.py", line 1587, in _transmit_reconfig
+                    #     await self._send_reconfig_param(param)
+                    #   File "/home/mark/miniforge3/envs/dev/lib/python3.12/site-packages/aiortc/rtcsctptransport.py", line 1370, in _send_reconfig_param
+                    #     await self._send_chunk(chunk)
+                    #   File "/home/mark/miniforge3/envs/dev/lib/python3.12/site-packages/aiortc/rtcsctptransport.py", line 1347, in _send_chunk
+                    #     await self.__transport._send_data(
+                    #   File "/home/mark/miniforge3/envs/dev/lib/python3.12/site-packages/aiortc/rtcdtlstransport.py", line 701, in _send_data
+                    #     raise ConnectionError("Cannot send encrypted data, not connected")
+                    # ConnectionError: Cannot send encrypted data, not connected
+                    try:
+                        asyncio.ensure_future(self._transmit_reconfig())
+                    except Exception:
+                        pass
             else:
                 # remove any queued messages for the datachannel
                 new_queue: DataChannelQueue = deque()
