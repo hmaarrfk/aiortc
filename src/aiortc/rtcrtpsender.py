@@ -140,6 +140,10 @@ class RTCRtpSender:
         return self.__kind
 
     @property
+    def encoder(self):
+        return self.__encoder
+
+    @property
     def track(self) -> MediaStreamTrack:
         """
         The :class:`MediaStreamTrack` which is being handled by the sender.
@@ -286,8 +290,8 @@ class RTCRtpSender:
                     self.__log_debug(
                         "- receiver estimated maximum bitrate %d bps", bitrate
                     )
-                    if self.__encoder and hasattr(self.__encoder, "target_bitrate"):
-                        self.__encoder.target_bitrate = bitrate
+                    # if self.__encoder and hasattr(self.__encoder, "target_bitrate"):
+                    #     self.__encoder.target_bitrate = bitrate
             except ValueError:
                 pass
 

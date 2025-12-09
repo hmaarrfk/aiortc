@@ -1,3 +1,4 @@
+import os
 import fractions
 import logging
 import math
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_BITRATE = 1000000  # 1 Mbps
 MIN_BITRATE = 500000  # 500 kbps
 MAX_BITRATE = 3000000  # 3 Mbps
+
+DEFAULT_BITRATE = 3_000_000  # 10 Mbps
+MIN_BITRATE = 1_000_000  # 1000 kbps
+MAX_BITRATE = 30_000_000  # 30 Mbps
 
 MAX_FRAME_RATE = 30
 PACKET_MAX = 1300
@@ -123,10 +128,129 @@ class H264Decoder(Decoder):
 
 class H264Encoder(Encoder):
     def __init__(self) -> None:
+        from ._ffmpeg_test_encoder import ffmpeg_test_encoder
         self.buffer_data = b""
         self.buffer_pts: Optional[int] = None
+
+        self.__needs_reconfigure: bool = False
+        self.__encoder: Optional[str] = None
+        self.__target_bitrate: Optional[int] = None
         self.codec: Optional[VideoCodecContext] = None
-        self.__target_bitrate = DEFAULT_BITRATE
+
+        for encoder in [
+            # nvenc is really choppy for h264??? but maybe i fixed that??
+            "h264_qsv",
+            "h264_nvenc",
+            "libx264",
+            "libopenh264",
+        ]:
+            try:
+                if ffmpeg_test_encoder(encoder):
+                    break
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                raise e
+
+        self.__encoder = encoder
+        self._reset_encoder_settings()
+
+    def _reset_encoder_settings(self) -> None:
+        if self.__encoder == "h264_qsv":
+            self.__pix_fmt = "nv12"
+            self.__codec_profile = "high"
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 10_000_000
+            bitrate = self.__target_bitrate
+            self.__codec_options = {
+                "level": "61",
+                "tune": "zerolatency",
+                "bf": "0",
+                "b_strategy": "0",
+
+                "forced_idr": "1",
+                "idr_interval": "0",
+
+                "p_strategy": "0",
+
+                "adaptive_i": "0",
+                "adaptive_b": "0",
+                "async_depth": "1",
+
+                "look_ahead": "0",
+                "extbrc": "0",
+                "low_delay_brc": "1",
+                'b': str(bitrate),
+                'maxrate': str(int(bitrate * 3)),
+                'minrate': str(int(bitrate / 3)),
+                'rc': 'cbr',
+
+                "profile": "high",
+                "g": "100",
+            }
+        elif self.__encoder == "h264_nvenc":
+            av.logging.set_level(av.logging.VERBOSE)
+            self.__pix_fmt = "yuv420p"
+            self.__codec_profile = "high"
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 5_000_000
+            bitrate = self.__target_bitrate
+            self.__codec_options = {
+                "level": "6.2",
+                "tune": "ull",             # closest to zerolatency for NVENC
+                # cbr doesn't seem to work???
+                # "rc": "vbr",              # or "vbr", depending on your needs
+                # "rc": "cbr_ld_hq",
+                'rc': 'cbr',
+                'multipass': 'disabled',
+
+                "preset": "p1",           # p1 = lowest latency, p7 = highest quality
+                'b': str(bitrate),
+                'maxrate': str(int(bitrate * 3)),
+                'minrate': str(int(bitrate / 3)),
+                'profile': 'high',
+
+                'bf': '0',
+                'b_adapt': '0',
+                'rc-lookahead': '0',
+                'lookahead_level': '0',
+                'b_ref_mode': '0',
+                '2pass': '0',
+
+                'no-scenecut': '1',
+                'strict_gop': '1',
+                'forced-idr': '1',
+                'zerolatency': '1',
+
+                'g': '100',
+                "delay": "0",
+                "vbv_bufsize": str(self.target_bitrate // 2),  # critical for NVENC latency
+                "async_depth": "1",        # one-frame pipeline depth
+            }
+        elif self.__encoder == "libx264":
+            self.__pix_fmt = "yuv420p"
+            self.__codec_profile = "Baseline"
+            self.__codec_options = {
+                "level": "31",
+                "tune": "zerolatency",
+            }
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 1_000_000
+        elif self.__encoder == "libopenh264":
+            self.__pix_fmt = "yuv420p"
+            self.__codec_profile = "Baseline"
+            self.__codec_options = {
+                "level": "31",
+                "tune": "zerolatency",
+            }
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 1_000_000
+        else:
+            self.__pix_fmt = "yuv420p"
+            self.__codec_profile = "high"
+            self.__codec_options = {}
+            self.__target_bitrate = DEFAULT_BITRATE
+
 
     @staticmethod
     def _packetize_fu_a(data: bytes) -> list[bytes]:
@@ -250,10 +374,9 @@ class H264Encoder(Encoder):
     ) -> Iterator[bytes]:
         if self.codec and (
             frame.width != self.codec.width
+            or self.encoder != self.codec.name
             or frame.height != self.codec.height
-            # we only adjust bitrate if it changes by over 10%
-            or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate
-            > 0.1
+            or self.__needs_reconfigure
         ):
             self.buffer_data = b""
             self.buffer_pts = None
@@ -267,22 +390,30 @@ class H264Encoder(Encoder):
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
-            self.codec = av.CodecContext.create("libx264", "w")
-            self.codec.width = frame.width
-            self.codec.height = frame.height
-            self.codec.bit_rate = self.target_bitrate
-            self.codec.pix_fmt = "yuv420p"
-            self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
-            self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
-            self.codec.options = {
-                "level": "31",
-                "tune": "zerolatency",
-            }
-            self.codec.profile = "Baseline"
+            try:
+                self.__needs_reconfigure = False
+                os.environ["LIBVA_MESSAGING_LEVEL"] = os.environ.get("LIBVA_MESSAGING_LEVEL", "1")
+                self.codec = av.CodecContext.create(self.encoder, "w")
+                self.codec.width = frame.width
+                self.codec.height = frame.height
+                self.codec.bit_rate = self.target_bitrate
+                self.codec.pix_fmt = self.pix_fmt
+                self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
+                self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
+                self.codec.options = self.codec_options
+                self.codec.profile = self.codec_profile
+            except Exception as e:
+                print(e)
+                raise e
 
-        data_to_send = b""
-        for package in self.codec.encode(frame):
-            data_to_send += bytes(package)
+        try:
+            data_to_send = b"".join(
+                bytes(package)
+                for package in self.codec.encode(frame)
+            )
+        except Exception as e:
+            print(e)
+            raise e
 
         if data_to_send:
             yield from self._split_bitstream(data_to_send)
@@ -310,8 +441,64 @@ class H264Encoder(Encoder):
 
     @target_bitrate.setter
     def target_bitrate(self, bitrate: int) -> None:
-        bitrate = max(MIN_BITRATE, min(bitrate, MAX_BITRATE))
+        # bitrate = max(MIN_BITRATE, min(bitrate, MAX_BITRATE))
+        # print(f"Requesting bitrate {bitrate:,}")
+        # bitrate = int(DEFAULT_BITRATE)
+
+        # we only adjust bitrate if it changes by over 5%
+        if abs(bitrate - self.__target_bitrate) > 0.05 * self.__target_bitrate:
+            self.__needs_reconfigure = True
+
         self.__target_bitrate = bitrate
+
+    @property
+    def encoder(self) -> Optional[str]:
+        return self.__encoder
+
+    @encoder.setter
+    def encoder(self, value: str) -> None:
+        from ._ffmpeg_test_encoder import ffmpeg_test_encoder
+        if not ffmpeg_test_encoder(value):
+            raise ValueError(f"Encoder {value} is not available")
+
+        old_encoder = self.__encoder
+        self.__encoder = value
+
+        if value != old_encoder:
+            self.__needs_reconfigure = True
+            # Hmm... is this the right way?
+            self._reset_encoder_settings()
+
+    @property
+    def pix_fmt(self) -> str:
+        return self.__pix_fmt
+
+    @pix_fmt.setter
+    def pix_fmt(self, value: str) -> None:
+        if value != self.__pix_fmt:
+            self.__needs_reconfigure = True
+        self.__pix_fmt = value
+
+    @property
+    def codec_profile(self) -> str:
+        return self.__codec_profile
+
+    @codec_profile.setter
+    def codec_profile(self, value: str) -> None:
+        if value != self.__codec_profile:
+            self.__needs_reconfigure = True
+
+        self.__codec_profile = value
+
+    @property
+    def codec_options(self) -> dict[str, str]:
+        return self.__codec_options
+
+    @codec_options.setter
+    def codec_options(self, value: dict[str, str]) -> None:
+        if value != self.__codec_options:
+            self.__needs_reconfigure = True
+        self.__codec_options = value
 
 
 def h264_depayload(payload: bytes) -> bytes:
