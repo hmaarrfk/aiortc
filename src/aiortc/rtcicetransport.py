@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -9,6 +10,31 @@ from pyee.asyncio import AsyncIOEventEmitter
 
 from .exceptions import InvalidStateError
 from .rtcconfiguration import RTCIceServer
+
+# aioice gathers server-reflexive (STUN) and relay (TURN) candidates from every
+# local interface and waits, ALL_COMPLETED, up to a hardcoded 5 seconds. An
+# interface that cannot reach the STUN/TURN server -- VPNs such as tailscale,
+# virtual bridges, link-local NICs -- never gets a reply, so its task never
+# completes and gathering stalls for the full 5s on every connection, even
+# though the usable candidates arrive in well under a second. For an answerer
+# (recvonly media server) this delay is the dominant connection-setup latency.
+#
+# Cap the per-component gather with a much shorter, configurable timeout. The
+# candidates that are going to succeed do so almost immediately; the timeout
+# only bounds how long we wait on interfaces that will never answer.
+ICE_GATHER_TIMEOUT = float(os.environ.get("AIORTC_ICE_GATHER_TIMEOUT", "1.0"))
+
+
+class _ShortGatherConnection(Connection):
+    """aioice ``Connection`` whose reflexive/relay gathering does not block for
+    the default 5s on unreachable interfaces. See ``ICE_GATHER_TIMEOUT``."""
+
+    async def get_component_candidates(
+        self, component: int, addresses: list[str], timeout: float = ICE_GATHER_TIMEOUT
+    ) -> list[Candidate]:
+        return await super().get_component_candidates(
+            component, addresses, timeout=timeout
+        )
 
 # See https://datatracker.ietf.org/doc/html/rfc7064
 # transport is not defined by RFC 7064 and rejected by browsers.
@@ -193,7 +219,7 @@ class RTCIceGatherer(AsyncIOEventEmitter):
             iceServers = self.getDefaultIceServers()
         ice_kwargs = connection_kwargs(iceServers)
 
-        self._connection = Connection(ice_controlling=False, **ice_kwargs)
+        self._connection = _ShortGatherConnection(ice_controlling=False, **ice_kwargs)
         self._remote_candidates_end = False
         self.__state = "new"
 
