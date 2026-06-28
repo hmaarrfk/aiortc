@@ -141,6 +141,7 @@ class H264Encoder(Encoder):
             # nvenc is really choppy for h264??? but maybe i fixed that??
             "h264_qsv",
             "h264_nvenc",
+            "h264_videotoolbox",
             "libx264",
             "libopenh264",
         ]:
@@ -226,6 +227,37 @@ class H264Encoder(Encoder):
                 "delay": "0",
                 "vbv_bufsize": str(self.target_bitrate // 2),  # critical for NVENC latency
                 "async_depth": "1",        # one-frame pipeline depth
+            }
+        elif self.__encoder == "h264_videotoolbox":
+            # Apple VideoToolbox hardware H.264 encoder, configured for
+            # low-latency real-time streaming. VideoToolbox does not expose
+            # explicit B-frame / lookahead / rate-control knobs; the encoder
+            # manages those internally. The options used here are:
+            #   constant_bit_rate=1 -> request constant bitrate (CBR); this
+            #                          maps to
+            #                          kVTCompressionPropertyKey_ConstantBitRate
+            #                          and requires macOS 13 or newer.
+            #   realtime=1          -> request real-time (low-latency) encoding.
+            #   prio_speed=1        -> prioritize encoding speed over quality.
+            #   max_ref_frames=1    -> limit the number of reference frames.
+            self.__pix_fmt = "yuv420p"
+            # No explicit profile/level is set: videotoolboxenc.c only forwards
+            # kVTCompressionPropertyKey_ProfileLevel to the encoder when a
+            # profile (or level) is requested, so leaving both unset lets the
+            # encoder choose them from the resolution and bitrate. The None
+            # profile is skipped in _encode_frame().
+            self.__codec_profile = None
+            if self.__target_bitrate is None:
+                self.__target_bitrate = 5_000_000
+            bitrate = self.__target_bitrate
+            self.__codec_options = {
+                "constant_bit_rate": "1",
+                "realtime": "1",
+                "prio_speed": "1",
+                "max_ref_frames": "1",
+                "bf": "0",
+                "b": str(bitrate),
+                "maxrate": str(int(bitrate * 1.5)),
             }
         elif self.__encoder == "libx264":
             self.__pix_fmt = "yuv420p"
@@ -401,7 +433,10 @@ class H264Encoder(Encoder):
                 self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
                 self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
                 self.codec.options = self.codec_options
-                self.codec.profile = self.codec_profile
+                # codec_profile may be None (e.g. VideoToolbox); skip the
+                # assignment so the encoder chooses the profile itself.
+                if self.codec_profile is not None:
+                    self.codec.profile = self.codec_profile
             except Exception as e:
                 print(e)
                 raise e
