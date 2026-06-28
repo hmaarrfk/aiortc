@@ -1,53 +1,50 @@
-# Since starting up ffmpeg can be time consuming, we use lru_cache
-# to remember the results of the tests.
-# If shape is provided as a tuple, it is something
-# that can be hashed by lru_cache in order to  ensure
-# the function returns quickly the second time it is requested.
-from curses import keyname
+from fractions import Fraction
 from functools import lru_cache
-import subprocess
+
+import av
+
+_CANDIDATE_PIX_FMTS = ("yuv420p", "nv12")
 
 
-def ffmpeg_test_encoder(
-    encoder,
-    parameters=None,
-):
+def ffmpeg_test_encoder(encoder, parameters=None):
     if parameters is None:
         parameters = {}
 
-    extra_codec_arguments = ()
-    for key, value in parameters.items():
-        extra_codec_arguments += (f'-{key}:v', str(value))
+    options = tuple(sorted((str(k), str(v)) for k, v in parameters.items()))
+    return _test_encoder(encoder, options)
 
-    return _ffmpeg_test_encoder(encoder, extra_codec_arguments)
 
 @lru_cache
-def _ffmpeg_test_encoder(encoder, extra_codec_arguments=None):
-    if extra_codec_arguments is None:
-        extra_codec_arguments = ()
-    # Note that images smaller than 256 x 256 may not be compatible
-    # with all encoders
-    shape = (256, 256)
-    # Use the null streams to validate if we can encode anything
-    # https://trac.ffmpeg.org/wiki/Null
-    # This effecitevely runs
-    # ffmpeg -hide_banner -f lavfi -i nullsrc=s=256x256:d=8 -f null -vcodec h264_nvenc -
-    cmd = [
-        "ffmpeg", "-hide_banner",
-        "-f", "lavfi",
-        # python works in height x width
-        # but ffmpeg expects width x height
-        # this makes a different for small videos with h264_nvenc
-        "-i", f"nullsrc=s={shape[1]}x{shape[0]}:d=8",
-        "-vcodec", encoder,
-    ] + list(extra_codec_arguments) + [
-        "-f", "null",
-        "-",
-    ]
-    p = subprocess.run(
-        cmd,
-        stdin=subprocess.PIPE,
-        capture_output=True,
-        check=False,
-    )
-    return p.returncode == 0
+def _test_encoder(encoder, options=()):
+    # Is the encoder name known to this libavcodec build at all?
+    try:
+        av.CodecContext.create(encoder, "w")
+    except (av.FFmpegError, ValueError, LookupError):
+        return False
+
+    option_dict = {key: value for key, value in options}
+    width = height = 256
+    for pix_fmt in _CANDIDATE_PIX_FMTS:
+        try:
+            codec = av.CodecContext.create(encoder, "w")
+            codec.width = width
+            codec.height = height
+            codec.pix_fmt = pix_fmt
+            codec.time_base = Fraction(1, 30)
+            codec.bit_rate = 1_000_000
+            if option_dict:
+                codec.options = option_dict
+
+            # Encode one defined frame; never hand an encoder uninitialized memory.
+            frame = av.VideoFrame(width, height, pix_fmt)
+            for plane in frame.planes:
+                plane.update(bytes(plane.buffer_size))
+            frame.pts = 0
+            frame.time_base = Fraction(1, 30)
+            codec.encode(frame)
+            codec.encode(None)
+        except (av.FFmpegError, ValueError):
+            continue
+        return True
+
+    return False
