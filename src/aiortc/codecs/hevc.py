@@ -14,7 +14,7 @@ from av.video.codeccontext import VideoCodecContext
 
 from ..jitterbuffer import JitterFrame
 from ..mediastreams import VIDEO_TIME_BASE, convert_timebase
-from .base import Decoder, Encoder
+from .base import Decoder, Encoder, apply_frame_color_properties
 
 logger = logging.getLogger(__name__)
 
@@ -501,6 +501,7 @@ class HEVCEncoder(Encoder):
                 self.codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
                 self.codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
                 self.codec.options = self.codec_options
+                apply_frame_color_properties(self.codec, frame)
                 # codec_profile may be None (e.g. VideoToolbox); skip the
                 # assignment so the encoder chooses the profile itself.
                 if self.codec_profile is not None:
