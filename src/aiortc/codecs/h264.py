@@ -191,7 +191,14 @@ class H264Encoder(Encoder):
             }
         elif self.__encoder == "h264_nvenc":
             av.logging.set_level(av.logging.VERBOSE)
-            self.__pix_fmt = "yuv420p"
+            # NVENC's native input surface is NV12. A yuv420p frame is accepted
+            # -- nvenc.c maps it to NV_ENC_BUFFER_FORMAT_YV12 and plane-copies
+            # it into the mapped surface -- but the driver then converts YV12
+            # to NV12 on the device before the encoder sees it. Asking for NV12
+            # hands it the layout it wanted, and lets a producer that can emit
+            # NV12 directly (the studio canvas does) skip a swscale on the way
+            # in as well.
+            self.__pix_fmt = "nv12"
             self.__codec_profile = "high"
             if self.__target_bitrate is None:
                 self.__target_bitrate = 5_000_000
