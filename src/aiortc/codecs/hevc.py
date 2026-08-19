@@ -251,7 +251,11 @@ class HEVCEncoder(Encoder):
                 'tier': tier,
             }
         elif self.__encoder == "hevc_nvenc":
-            self.__pix_fmt = "yuv420p"
+            # NVENC's native input surface is NV12; see the h264_nvenc branch
+            # in h264.py for why. hevc_nvenc shares nvenc.c's format list
+            # (CODEC_PIXFMTS_ARRAY(ff_nvenc_pix_fmts) in nvenc_hevc.c), so the
+            # argument is identical.
+            self.__pix_fmt = "nv12"
             if self.__target_bitrate is None:
                 self.__target_bitrate = 3_000_000
             self.__codec_options = {
