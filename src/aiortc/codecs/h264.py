@@ -238,33 +238,70 @@ class H264Encoder(Encoder):
         elif self.__encoder == "h264_videotoolbox":
             # Apple VideoToolbox hardware H.264 encoder, configured for
             # low-latency real-time streaming. VideoToolbox does not expose
-            # explicit B-frame / lookahead / rate-control knobs; the encoder
-            # manages those internally. The options used here are:
-            #   constant_bit_rate=1 -> request constant bitrate (CBR); this
-            #                          maps to
-            #                          kVTCompressionPropertyKey_ConstantBitRate
-            #                          and requires macOS 13 or newer.
-            #   realtime=1          -> request real-time (low-latency) encoding.
-            #   prio_speed=1        -> prioritize encoding speed over quality.
-            #   max_ref_frames=1    -> limit the number of reference frames.
+            # explicit B-frame / lookahead knobs; the encoder manages those
+            # internally, and with max_b_frames at 0 (bf=0) videotoolboxenc.c
+            # turns frame reordering off. Every option here was measured on
+            # the studio's own rendered frames (a pan and a zoom, then a still
+            # view) at 1052x872 and 1920x1080, paced at 30 fps -- see
+            # benchmarks/studio_videotoolbox_h264.py in python-owl:
+            #   g=300           -> keyframe at most every 10 s. Without it
+            #                      FFmpeg's default gop_size of 12 becomes
+            #                      MaxKeyFrameInterval=12, an I-frame every
+            #                      0.4 s that eats the budget: the still view
+            #                      sat at 31 dB / SSIM 0.93 and went to 40 dB /
+            #                      0.99 at the same 5 Mbps from this alone.
+            #                      A forced keyframe (pict_type I, which is
+            #                      how a PLI is answered) is still honoured.
+            #   maxrate=3*b     -> the DataRateLimits cap. At 1.5x it clipped
+            #                      the motion frames (-2 dB); with no cap the
+            #                      encoder overspent in motion and lost 2 dB on
+            #                      the still view. 3x was best on both at every
+            #                      bitrate from 1 to 20 Mbps.
+            #   realtime=1      -> request real-time scheduling; no measurable
+            #                      effect on quality, kept as the hint.
+            #   prio_speed=1    -> prefer encoding speed over quality, and
+            #   max_ref_frames=1 -> one reference frame. Neither changed a byte
+            #                      of output on Apple Silicon at these
+            #                      settings, kept as the intent: the stream
+            #                      must stay snappy on hardware that does
+            #                      honour them.
+            # Dropped, having been measured: constant_bit_rate=1 (byte-identical
+            # to average-bitrate mode at the same gop, so it bought nothing),
+            # coder and power_efficient (byte-identical output as well). Delay
+            # is unchanged: old and new both hold one frame at 30 fps, the
+            # packet for a frame coming back with the next frame's encode()
+            # call, 33 ms later.
+            # spatial_aq is left to the encoder: disabling it raised luma PSNR
+            # in motion by 1 dB but lowered the still view by the same, and
+            # the flat dark background is where AQ spends its bits.
+            #
+            # Constant quality (global_quality 1..100 through the options
+            # dict; the context attribute of the same name is in qscale units
+            # and saturates at 1.0) works on Apple Silicon but does not suit
+            # the studio: it spends the same quantizer on a still view as on a
+            # pan, so it cost 18.5 Mbps for 35 dB where bitrate mode gives
+            # 40 dB at 5 Mbps once the scene is still.
             self.__pix_fmt = "yuv420p"
             # No explicit profile/level is set: videotoolboxenc.c only forwards
             # kVTCompressionPropertyKey_ProfileLevel to the encoder when a
             # profile (or level) is requested, so leaving both unset lets the
-            # encoder choose them from the resolution and bitrate. The None
-            # profile is skipped in _encode_frame().
+            # encoder choose them from the resolution and bitrate. It picks
+            # High, which measured best (baseline -1 dB in motion, -4 dB
+            # still). The None profile is skipped in _encode_frame().
             self.__codec_profile = None
             if self.__target_bitrate is None:
-                self.__target_bitrate = 5_000_000
+                # 5 Mbps left a 1052x872 pan at 25.6 dB luma PSNR; 10 Mbps
+                # gives 29.0 dB (SSIM 0.71 -> 0.83) and the still view 45 dB.
+                self.__target_bitrate = 10_000_000
             bitrate = self.__target_bitrate
             self.__codec_options = {
-                "constant_bit_rate": "1",
                 "realtime": "1",
                 "prio_speed": "1",
                 "max_ref_frames": "1",
                 "bf": "0",
+                "g": "300",
                 "b": str(bitrate),
-                "maxrate": str(int(bitrate * 1.5)),
+                "maxrate": str(int(bitrate * 3)),
             }
         elif self.__encoder == "libx264":
             self.__pix_fmt = "yuv420p"
@@ -491,8 +528,15 @@ class H264Encoder(Encoder):
         # we only adjust bitrate if it changes by over 5%
         if abs(bitrate - self.__target_bitrate) > 0.05 * self.__target_bitrate:
             self.__needs_reconfigure = True
-
-        self.__target_bitrate = bitrate
+            self.__target_bitrate = bitrate
+            # The hardware encoders carry the bitrate inside their options
+            # ('b', 'maxrate'), and an option set at open overrides the
+            # context's bit_rate attribute. Rebuild them, or the new target
+            # never reaches the encoder: measured on h264_videotoolbox, a
+            # 5 Mbps request kept streaming at the 10 Mbps default.
+            self._reset_encoder_settings()
+        else:
+            self.__target_bitrate = bitrate
 
     @property
     def encoder(self) -> Optional[str]:
