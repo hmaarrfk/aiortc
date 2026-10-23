@@ -1,11 +1,14 @@
 import asyncio
+import ipaddress
 import logging
 import os
 import re
+import socket
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from aioice import Candidate, Connection, ConnectionClosed
+from aioice import Candidate, Connection, ConnectionClosed, TransportPolicy
+from aioice import ice as aioice_ice
 from pyee.asyncio import AsyncIOEventEmitter
 
 from .exceptions import InvalidStateError
@@ -23,18 +26,141 @@ from .rtcconfiguration import RTCIceServer
 # candidates that are going to succeed do so almost immediately; the timeout
 # only bounds how long we wait on interfaces that will never answer.
 ICE_GATHER_TIMEOUT = float(os.environ.get("AIORTC_ICE_GATHER_TIMEOUT", "1.0"))
+# Once the relay candidate and one server-reflexive candidate are in, the
+# remaining requests get this long to answer before gathering returns without
+# them. A request that answers at all answers within a round trip of the
+# first one, so the timeout above is only reached when TURN is unreachable.
+ICE_GATHER_GRACE = float(os.environ.get("AIORTC_ICE_GATHER_GRACE", "0.1"))
 
 
 class _ShortGatherConnection(Connection):
-    """aioice ``Connection`` whose reflexive/relay gathering does not block for
-    the default 5s on unreachable interfaces. See ``ICE_GATHER_TIMEOUT``."""
+    """aioice ``Connection`` whose reflexive/relay gathering returns as soon as
+    the useful candidates are in rather than waiting on every interface. See
+    ``ICE_GATHER_TIMEOUT`` and ``ICE_GATHER_GRACE``."""
 
     async def get_component_candidates(
         self, component: int, addresses: list[str], timeout: float = ICE_GATHER_TIMEOUT
     ) -> list[Candidate]:
-        return await super().get_component_candidates(
-            component, addresses, timeout=timeout
+        # aioice's own implementation, up to the wait on the STUN and TURN
+        # tasks: it waits for all of them, so one interface that never hears
+        # back holds every connection for the whole timeout.
+        candidates = []
+        loop = asyncio.get_running_loop()
+
+        host_protocols = []
+        for address in addresses:
+            try:
+                transport, protocol = await loop.create_datagram_endpoint(
+                    lambda: aioice_ice.StunProtocol(self), local_addr=(address, 0)
+                )
+                sock = transport.get_extra_info("socket")
+                if sock is not None:
+                    sock.setsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_RCVBUF,
+                        aioice_ice.turn.UDP_SOCKET_BUFFER_SIZE,
+                    )
+            except OSError as exc:
+                logger.info("Could not bind to %s - %s", address, exc)
+                continue
+            host_protocols.append(protocol)
+
+            candidate_address = protocol.transport.get_extra_info("sockname")
+            protocol.local_candidate = Candidate(
+                foundation=aioice_ice.candidate_foundation(
+                    "host", "udp", candidate_address[0]
+                ),
+                component=component,
+                transport="udp",
+                priority=aioice_ice.candidate_priority(component, "host"),
+                host=candidate_address[0],
+                port=candidate_address[1],
+                type="host",
+            )
+            if self._transport_policy == TransportPolicy.ALL:
+                candidates.append(protocol.local_candidate)
+        self._protocols += host_protocols
+
+        reflexive_tasks = []
+        if self.stun_server:
+            for protocol in host_protocols:
+                if ipaddress.ip_address(protocol.local_candidate.host).version == 4:
+                    reflexive_tasks.append(
+                        asyncio.create_task(
+                            aioice_ice.server_reflexive_candidate(
+                                protocol, self.stun_server
+                            )
+                        )
+                    )
+
+        relay_task = None
+        if self.turn_server:
+            relay_task = asyncio.create_task(
+                aioice_ice.relayed_candidate(
+                    component=component,
+                    protocol_factory=lambda: aioice_ice.StunProtocol(self),
+                    turn_server=self.turn_server,
+                    turn_username=self.turn_username,
+                    turn_password=self.turn_password,
+                    turn_ssl=self.turn_ssl,
+                    turn_transport=self.turn_transport,
+                )
+            )
+
+        tasks = reflexive_tasks + ([relay_task] if relay_task else [])
+        if tasks:
+            await _wait_for_useful_candidates(
+                reflexive_tasks, relay_task, timeout, ICE_GATHER_GRACE
+            )
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+                elif task.exception() is None:
+                    candidate, protocol = task.result()
+                    candidates.append(candidate)
+                    if protocol is not None:
+                        self._protocols.append(protocol)
+
+        return candidates
+
+
+def _succeeded(task: asyncio.Task) -> bool:
+    return task.done() and not task.cancelled() and task.exception() is None
+
+
+async def _wait_for_useful_candidates(
+    reflexive_tasks: list[asyncio.Task],
+    relay_task: Optional[asyncio.Task],
+    timeout: float,
+    grace: float,
+) -> None:
+    """Wait until the relay request has finished and one reflexive request has
+    succeeded (or all of them have finished), then give the rest ``grace``
+    seconds, never waiting longer than ``timeout`` in all."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    pending = set(reflexive_tasks)
+    if relay_task is not None:
+        pending.add(relay_task)
+
+    def useful() -> bool:
+        relay_settled = relay_task is None or relay_task.done()
+        reflexive_settled = all(task.done() for task in reflexive_tasks) or any(
+            _succeeded(task) for task in reflexive_tasks
         )
+        return relay_settled and reflexive_settled
+
+    while pending and not useful():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return
+        _, pending = await asyncio.wait(
+            pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
+        )
+    remaining = min(grace, deadline - loop.time())
+    if pending and remaining > 0:
+        await asyncio.wait(pending, timeout=remaining)
+
 
 # See https://datatracker.ietf.org/doc/html/rfc7064
 # transport is not defined by RFC 7064 and rejected by browsers.
